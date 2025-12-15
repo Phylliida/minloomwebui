@@ -23,6 +23,9 @@
       flex-direction: column;
     }
     .bar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
       display: flex;
       gap: 8px;
       align-items: center;
@@ -124,12 +127,22 @@
       const canNext = () => state.history.length > 0 && currentIndex() < state.history.length - 1;
       const setUndoEnabled = () => { if (undoButton) undoButton.disabled = state.lastPreGenIdx == null || !!state.controller; };
 
-      const fitPad = () => {
+      const isNearBottom = (threshold = 48) => {
+        const doc = document.documentElement;
+        return doc.scrollHeight - (window.scrollY + window.innerHeight) <= threshold;
+      };
+
+      const fitPad = stickToBottomInput => {
         const pad = $('pad');
+        if (!pad) return;
         const bar = document.querySelector('.bar');
         const min = Math.max(0, window.innerHeight - (bar?.offsetHeight || 0));
+        const shouldStick = typeof stickToBottomInput === 'boolean' ? stickToBottomInput : isNearBottom();
+        const prevScroll = window.scrollY;
         pad.style.height = 'auto';
         pad.style.height = Math.max(min, pad.scrollHeight) + 'px';
+        if (shouldStick) window.scrollTo({ top: document.documentElement.scrollHeight });
+        else window.scrollTo({ top: prevScroll });
       };
 
       const updateHistoryStatus = () => {
@@ -278,9 +291,18 @@
       const mergeContent = text => {
         if (text.startsWith(state.gen)) state.gen = text;
         else state.gen += text;
-        $('pad').value = state.base + state.gen;
-        fitPad();
-        logChange($('pad').value);
+        const pad = $('pad');
+        const stickToBottom = isNearBottom();
+        const wasFocused = document.activeElement === pad;
+        const atEnd = wasFocused && pad.selectionStart === pad.value.length && pad.selectionEnd === pad.value.length;
+        pad.value = state.base + state.gen;
+        if (wasFocused && atEnd) {
+          const pos = pad.value.length;
+          pad.selectionStart = pos;
+          pad.selectionEnd = pos;
+        }
+        fitPad(stickToBottom);
+        logChange(pad.value);
       };
 
       const handleEvent = chunk => {
