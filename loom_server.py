@@ -30,6 +30,7 @@ def append_entry(
     ts: float | None = None,
     ms: float | None = None,
     params: dict | None = None,
+    pre_gen_index: int | None = None,
 ) -> dict:
     global _history_count
     idx = history_count()
@@ -44,6 +45,7 @@ def append_entry(
         "text": text,
         "id": entry_id or str(uuid.uuid4()),
         "params": params or {},
+        "pre_gen_index": pre_gen_index,
     }
     HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     with HISTORY_FILE.open("a", encoding="utf-8") as fh:
@@ -60,6 +62,7 @@ def normalize_entry(data: dict, fallback_index: int) -> dict:
         "text": data.get("text", ""),
         "id": data.get("id"),
         "params": data.get("params") or {},
+        "pre_gen_index": data.get("pre_gen_index"),
     }
 
 
@@ -113,6 +116,7 @@ def history():
             payload.get("ts"),
             payload.get("ms"),
             payload.get("params"),
+            payload.get("pre_gen_index"),
         )
         return jsonify({"ok": True, "entry": entry})
     entry_id = request.args.get("id")

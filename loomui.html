@@ -82,6 +82,7 @@
 <body>
   <div class="bar">
     <div class="cluster">
+      <button id="undoGen" disabled>Undo Gen</button>
       <button id="generate" class="primary">Generate</button>
       <button id="stop" disabled>Stop</button>
     </div>
@@ -105,11 +106,12 @@
   <script>
     (() => {
       const $ = id => document.getElementById(id);
-      const state = { controller: null, base: '', gen: '', history: [], histPos: null, ignoreLog: false };
+      const state = { controller: null, base: '', gen: '', history: [], histPos: null, ignoreLog: false, lastPreGenIdx: null };
       const newId = () => crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
       const getHashId = () => (location.hash || '').replace(/^#/, '') || null;
       const setHash = id => { if (id) location.hash = id; };
       const histInput = $('histIndex');
+      const undoButton = $('undoGen');
 
       const withLogPaused = fn => {
         state.ignoreLog = true;
@@ -119,6 +121,7 @@
       const currentIndex = () => state.histPos ?? state.history.length - 1;
       const canPrev = () => state.history.length > 0 && currentIndex() > 0;
       const canNext = () => state.history.length > 0 && currentIndex() < state.history.length - 1;
+      const setUndoEnabled = () => { if (undoButton) undoButton.disabled = state.lastPreGenIdx == null || !!state.controller; };
 
       const fitPad = () => {
         const pad = $('pad');
@@ -134,6 +137,7 @@
         $('historyStatus').textContent = `${pos}/${total}`;
         $('prev').disabled = !!state.controller || !canPrev();
         $('next').disabled = !!state.controller || !canNext();
+        setUndoEnabled();
         if (histInput) {
           histInput.value = state.histPos == null ? '' : (state.history[state.histPos]?.index ?? state.histPos);
           histInput.placeholder = total ? 'index' : '';
@@ -146,6 +150,7 @@
           ts: entry.ts,
           ms: entry.ms,
           params: entry.params || {},
+          pre_gen_index: entry.pre_gen_index,
           text: entry.text ?? $('pad').value,
           id: entry.id || newId()
         };
@@ -168,7 +173,7 @@
         fetch('/history', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, ts: ts / 1000, ms: ts, id, params: getParams() })
+          body: JSON.stringify({ text, ts: ts / 1000, ms: ts, id, params: getParams(), pre_gen_index: state.lastPreGenIdx })
         })
           .then(res => res.ok ? res.json() : null)
           .then(data => { if (data?.entry) addEntry(data.entry); })
@@ -206,6 +211,7 @@
       const showEntry = idx => {
         if (idx < 0 || idx >= state.history.length) return;
         state.histPos = idx;
+        state.lastPreGenIdx = state.history[idx]?.pre_gen_index ?? state.lastPreGenIdx;
         withLogPaused(() => {
           $('pad').value = state.history[idx].text ?? '';
           setParams(state.history[idx].params);
@@ -254,6 +260,7 @@
         $('pad').readOnly = on;
         $('status').textContent = on ? 'generating…' : 'idle';
         updateHistoryStatus();
+        setUndoEnabled();
       };
 
       const stop = () => {
@@ -311,14 +318,13 @@
       };
 
       const generate = async () => {
+        const beforeIdx = currentIndex();
         stop();
+        state.lastPreGenIdx = beforeIdx >= 0 ? (state.history[beforeIdx]?.index ?? beforeIdx) : null;
+        setUndoEnabled();
         state.base = $('pad').value;
         state.gen = '';
         const prompt = state.base;
-        if (!prompt.trim()) {
-          $('status').textContent = 'Nothing to generate.';
-          return;
-        }
         setRunning(true);
         $('status').textContent = 'generating…';
         state.controller = new AbortController();
@@ -357,6 +363,19 @@
         const el = $(id);
         if (el) el.addEventListener('input', () => logChange($('pad').value));
       });
+      const undoGeneration = () => {
+        if (state.lastPreGenIdx == null) return;
+        stop();
+        const pos = findHistoryPosForIndex(state.lastPreGenIdx);
+        if (pos !== -1) {
+          showEntry(pos);
+          state.base = $('pad').value;
+          state.gen = '';
+        }
+        state.lastPreGenIdx = null;
+        setUndoEnabled();
+      };
+      if (undoButton) undoButton.addEventListener('click', undoGeneration);
       const jumpToIndexInput = () => {
         if (!histInput) return;
         if (!histInput.value) return;
@@ -386,7 +405,8 @@
           state.history = (data.entries ?? []).sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).map(entry => ({
             ...entry,
             id: entry.id || newId(),
-            params: entry.params || {}
+            params: entry.params || {},
+            pre_gen_index: entry.pre_gen_index
           }));
           state.histPos = state.history.length ? state.history.length - 1 : null;
           const hashed = getHashId();
