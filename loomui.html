@@ -80,6 +80,8 @@
       padding: 6px 8px;
       font: inherit;
     }
+    .param.stop input { width: 200px; }
+    .param.prefix input { width: 180px; }
   </style>
 </head>
 <body>
@@ -95,6 +97,8 @@
       <label class="param">min_p <input id="minp" type="number" step="0.01" min="0" max="1" value="0"></label>
       <label class="param">rep <input id="reppen" type="number" step="0.01" min="0" value="1"></label>
       <label class="param">max_tok <input id="maxtok" type="number" step="1" min="1" value="512"></label>
+      <label class="param stop">stop <input id="stopTokens" type="text" placeholder="comma-separated"></label>
+      <label class="param prefix">prefix <input id="prefix" type="text" placeholder="prepend on generate"></label>
     </div>
     <div class="cluster history">
       <button id="prev" disabled aria-label="Previous entry">Prev</button>
@@ -109,7 +113,7 @@
   <script>
     (() => {
       const $ = id => document.getElementById(id);
-      const state = { controller: null, base: '', gen: '', history: [], histPos: null, ignoreLog: false, lastPreGenIdx: null };
+      const state = { controller: null, base: '', gen: '', history: [], histPos: null, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false };
       const newId = () => crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
       const getHashId = () => (location.hash || '').replace(/^#/, '') || null;
       const setHash = id => { if (id) location.hash = id; };
@@ -131,6 +135,15 @@
         const doc = document.documentElement;
         return doc.scrollHeight - (window.scrollY + window.innerHeight) <= threshold;
       };
+
+      const getStopRaw = () => $('stopTokens')?.value ?? '';
+      const parseStopTokens = val => (val || '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean)
+        .map(s => s.replace(/\\n/g, '\n'));
+      const getPrefixRaw = () => $('prefix')?.value ?? '';
+      const getPrefix = () => getPrefixRaw().replace(/\\n/g, '\n');
 
       const fitPad = stickToBottomInput => {
         const pad = $('pad');
@@ -182,12 +195,14 @@
 
       const logChange = text => {
         if (state.ignoreLog) return;
+        const content = text ?? $('pad')?.value;
+        if (content === undefined) return;
         const id = newId();
         const ts = Date.now();
         fetch('/history', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text, ts: ts / 1000, ms: ts, id, params: getParams(), pre_gen_index: state.lastPreGenIdx })
+          body: JSON.stringify({ text: content, ts: ts / 1000, ms: ts, id, params: getParams(), pre_gen_index: state.lastPreGenIdx })
         })
           .then(res => res.ok ? res.json() : null)
           .then(data => { if (data?.entry) addEntry(data.entry); })
@@ -199,13 +214,21 @@
           const n = parser($(id).value);
           return Number.isFinite(n) ? n : fallback;
         };
+        const stopRaw = getStopRaw();
+        const stopTokens = parseStopTokens(stopRaw);
+        const prefixRaw = getPrefixRaw();
+        const prefix = getPrefix();
         return {
           temperature: num('temp', 1, parseFloat),
           top_k: num('topk', 0, parseInt),
           top_p: num('topp', 1, parseFloat),
           min_p: num('minp', 0, parseFloat),
           repetition_penalty: num('reppen', 1, parseFloat),
-          n_predict: num('maxtok', 512, parseInt)
+          n_predict: num('maxtok', 512, parseInt),
+          stop: stopTokens.length ? stopTokens : undefined,
+          stop_raw: stopRaw || undefined,
+          prefix: prefix || undefined,
+          prefix_raw: prefixRaw || undefined
         };
       };
 
@@ -222,6 +245,21 @@
         set('minp', params.min_p);
         set('reppen', params.repetition_penalty);
         set('maxtok', params.n_predict ?? params.max_tokens ?? params.max_new_tokens);
+        const stop = params.stop || params.stop_tokens || [];
+        const stopField = $('stopTokens');
+        if (stopField) {
+          const stopRaw = params.stop_raw ?? params.stop_tokens_raw ?? (
+            Array.isArray(stop)
+              ? stop.map(s => typeof s === 'string' ? s.replace(/\n/g, '\\n') : s).join(', ')
+              : (typeof stop === 'string' ? stop.replace(/\n/g, '\\n') : stop)
+          );
+          stopField.value = stopRaw || '';
+        }
+        const prefixField = $('prefix');
+        if (prefixField) {
+          const raw = params.prefix_raw ?? params.prefix ?? params.input_prefix ?? '';
+          prefixField.value = typeof raw === 'string' ? raw.replace(/\n/g, '\\n') : raw;
+        }
       };
 
       const showEntry = idx => {
@@ -281,9 +319,17 @@
         setUndoEnabled();
       };
 
+      const logGenerationEnd = () => {
+        if (!state.runId || state.runLoggedEnd) return;
+        state.runLoggedEnd = true;
+        logChange();
+      };
+
       const stop = () => {
+        const wasGenerating = !!state.controller;
         if (state.controller) state.controller.abort();
         state.controller = null;
+        if (wasGenerating) logGenerationEnd();
         setRunning(false);
         $('status').textContent = 'stopped';
       };
@@ -302,7 +348,6 @@
           pad.selectionEnd = pos;
         }
         fitPad(stickToBottom);
-        logChange(pad.value);
       };
 
       const handleEvent = chunk => {
@@ -350,8 +395,25 @@
         state.lastPreGenIdx = beforeIdx >= 0 ? (state.history[beforeIdx]?.index ?? beforeIdx) : null;
         setUndoEnabled();
         state.base = $('pad').value;
+        const prefix = getPrefix();
+        if (prefix) {
+          state.base += prefix;
+          withLogPaused(() => {
+            const pad = $('pad');
+            if (pad) {
+              pad.value = state.base;
+              const pos = pad.value.length;
+              pad.selectionStart = pos;
+              pad.selectionEnd = pos;
+              fitPad(true);
+            }
+          });
+        }
         state.gen = '';
         const prompt = state.base;
+        state.runId = newId();
+        state.runLoggedEnd = false;
+        logChange(state.base);
         setRunning(true);
         $('status').textContent = 'generating…';
         state.controller = new AbortController();
@@ -369,12 +431,16 @@
           if (!res.ok) throw new Error(`Server ${res.status}`);
           await pumpStream(res);
           $('status').textContent = 'done';
+          logGenerationEnd();
         } catch (err) {
+          logGenerationEnd();
           if (err.name === 'AbortError') $('status').textContent = 'stopped';
           else $('status').textContent = `error: ${err.message}`;
         } finally {
           setRunning(false);
           state.controller = null;
+          state.runId = null;
+          state.runLoggedEnd = false;
         }
       };
 
@@ -391,7 +457,7 @@
         }
       });
       $('pad').addEventListener('input', () => { fitPad(); logChange($('pad').value); });
-      ['temp', 'topk', 'topp', 'minp', 'reppen', 'maxtok'].forEach(id => {
+      ['temp', 'topk', 'topp', 'minp', 'reppen', 'maxtok', 'stopTokens', 'prefix'].forEach(id => {
         const el = $(id);
         if (el) el.addEventListener('input', () => logChange($('pad').value));
       });
