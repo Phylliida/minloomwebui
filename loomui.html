@@ -32,6 +32,15 @@
     }
     .cluster { display: flex; gap: 8px; align-items: center; }
     .history { gap: 6px; }
+    .history input {
+      width: 72px;
+      background: #0f172a;
+      border: 1px solid var(--border);
+      color: var(--ink);
+      border-radius: 4px;
+      padding: 6px 8px;
+      font: inherit;
+    }
     textarea {
       width: 100%;
       padding: 12px;
@@ -85,6 +94,7 @@
     </div>
     <div class="cluster history">
       <button id="prev" disabled aria-label="Previous entry">Prev</button>
+      <input id="histIndex" type="number" min="0" step="1" aria-label="History index">
       <span id="historyStatus" class="status">0/0</span>
       <button id="next" disabled aria-label="Next entry">Next</button>
     </div>
@@ -99,6 +109,7 @@
       const newId = () => crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
       const getHashId = () => (location.hash || '').replace(/^#/, '') || null;
       const setHash = id => { if (id) location.hash = id; };
+      const histInput = $('histIndex');
 
       const withLogPaused = fn => {
         state.ignoreLog = true;
@@ -123,6 +134,10 @@
         $('historyStatus').textContent = `${pos}/${total}`;
         $('prev').disabled = !!state.controller || !canPrev();
         $('next').disabled = !!state.controller || !canNext();
+        if (histInput) {
+          histInput.value = state.histPos == null ? '' : (state.history[state.histPos]?.index ?? state.histPos);
+          histInput.placeholder = total ? 'index' : '';
+        }
       };
 
       const addEntry = entry => {
@@ -206,6 +221,15 @@
         if (idx === -1) return false;
         showEntry(idx);
         return true;
+      };
+
+      const findHistoryPosForIndex = num => {
+        if (!Number.isFinite(num)) return -1;
+        const byIndex = state.history.findIndex(e => e?.index === num);
+        if (byIndex !== -1) return byIndex;
+        if (num >= 1 && num <= state.history.length) return num - 1; // allow 1-based positions
+        if (num >= 0 && num < state.history.length) return num; // allow 0-based positions
+        return -1;
       };
 
       const fetchEntryById = async id => {
@@ -333,6 +357,26 @@
         const el = $(id);
         if (el) el.addEventListener('input', () => logChange($('pad').value));
       });
+      const jumpToIndexInput = () => {
+        if (!histInput) return;
+        if (!histInput.value) return;
+        const num = parseInt(histInput.value, 10);
+        const pos = findHistoryPosForIndex(num);
+        if (pos !== -1) {
+          showEntry(pos);
+        } else {
+          histInput.value = state.histPos == null ? '' : (state.history[state.histPos]?.index ?? state.histPos);
+        }
+      };
+      if (histInput) {
+        histInput.addEventListener('keydown', e => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            jumpToIndexInput();
+          }
+        });
+        histInput.addEventListener('blur', jumpToIndexInput);
+      }
 
       const loadHistory = async () => {
         try {
