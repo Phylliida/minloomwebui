@@ -84,7 +84,6 @@
     <div class="cluster">
       <button id="undoGen" disabled>Undo Gen</button>
       <button id="generate" class="primary">Generate</button>
-      <button id="stop" disabled>Stop</button>
     </div>
     <div class="cluster params">
       <label class="param">T <input id="temp" type="number" step="0.1" min="0" value="1"></label>
@@ -92,6 +91,7 @@
       <label class="param">top_p <input id="topp" type="number" step="0.01" min="0" max="1" value="1"></label>
       <label class="param">min_p <input id="minp" type="number" step="0.01" min="0" max="1" value="0"></label>
       <label class="param">rep <input id="reppen" type="number" step="0.01" min="0" value="1"></label>
+      <label class="param">max_tok <input id="maxtok" type="number" step="1" min="1" value="512"></label>
     </div>
     <div class="cluster history">
       <button id="prev" disabled aria-label="Previous entry">Prev</button>
@@ -112,6 +112,7 @@
       const setHash = id => { if (id) location.hash = id; };
       const histInput = $('histIndex');
       const undoButton = $('undoGen');
+      const generateButton = $('generate');
 
       const withLogPaused = fn => {
         state.ignoreLog = true;
@@ -190,7 +191,8 @@
           top_k: num('topk', 0, parseInt),
           top_p: num('topp', 1, parseFloat),
           min_p: num('minp', 0, parseFloat),
-          repetition_penalty: num('reppen', 1, parseFloat)
+          repetition_penalty: num('reppen', 1, parseFloat),
+          n_predict: num('maxtok', 512, parseInt)
         };
       };
 
@@ -206,6 +208,7 @@
         set('topp', params.top_p);
         set('minp', params.min_p);
         set('reppen', params.repetition_penalty);
+        set('maxtok', params.n_predict ?? params.max_tokens ?? params.max_new_tokens);
       };
 
       const showEntry = idx => {
@@ -255,8 +258,10 @@
       };
 
       const setRunning = on => {
-        $('generate').disabled = on;
-        $('stop').disabled = !on;
+        if (generateButton) {
+          generateButton.textContent = on ? 'Stop' : 'Generate';
+          generateButton.classList.toggle('primary', !on);
+        }
         $('pad').readOnly = on;
         $('status').textContent = on ? 'generating…' : 'idle';
         updateHistoryStatus();
@@ -351,15 +356,20 @@
         }
       };
 
-      $('generate').addEventListener('click', generate);
-      $('stop').addEventListener('click', stop);
+      $('generate').addEventListener('click', () => {
+        if (state.controller) stop();
+        else generate();
+      });
       $('prev').addEventListener('click', () => showEntry(currentIndex() - 1));
       $('next').addEventListener('click', () => showEntry(currentIndex() + 1));
       document.addEventListener('keydown', e => {
-        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') generate();
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+          if (state.controller) stop();
+          else generate();
+        }
       });
       $('pad').addEventListener('input', () => { fitPad(); logChange($('pad').value); });
-      ['temp', 'topk', 'topp', 'minp', 'reppen'].forEach(id => {
+      ['temp', 'topk', 'topp', 'minp', 'reppen', 'maxtok'].forEach(id => {
         const el = $(id);
         if (el) el.addEventListener('input', () => logChange($('pad').value));
       });
