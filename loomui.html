@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Loom UI</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #e5e7eb;
+      --paper: #0b1220;
+      --accent: #9ca3af;
+      --muted: #94a3b8;
+      --border: #1f2937;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font: 14px/1.4 "Iosevka", "JetBrains Mono", "SFMono-Regular", monospace;
+      color: var(--ink);
+      background: var(--paper);
+      display: flex;
+      flex-direction: column;
+    }
+    .bar {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      padding: 10px;
+      background: #0f172a;
+      border-bottom: 1px solid var(--border);
+    }
+    .cluster { display: flex; gap: 8px; align-items: center; }
+    .history { gap: 6px; }
+    textarea {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      font: inherit;
+      resize: none;
+      background: transparent;
+      color: var(--ink);
+      outline: none;
+      min-height: calc(100vh - 52px);
+      overflow: hidden;
+    }
+    button {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font: inherit;
+      cursor: pointer;
+      background: #111827;
+      color: var(--ink);
+      transition: transform 120ms ease, box-shadow 120ms ease;
+    }
+    button:active { transform: translateY(1px); }
+    button.primary { background: var(--accent); color: #0b1220; }
+    button:disabled { cursor: not-allowed; opacity: 0.5; box-shadow: none; transform: none; }
+    .status { color: var(--muted); font-size: 12px; }
+    .param { color: var(--muted); display: flex; align-items: center; gap: 4px; font-size: 12px; }
+    .param input {
+      width: 70px;
+      background: #0f172a;
+      border: 1px solid var(--border);
+      color: var(--ink);
+      border-radius: 4px;
+      padding: 6px 8px;
+      font: inherit;
+    }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <div class="cluster">
+      <button id="generate" class="primary">Generate</button>
+      <button id="stop" disabled>Stop</button>
+    </div>
+    <div class="cluster params">
+      <label class="param">T <input id="temp" type="number" step="0.1" min="0" value="1"></label>
+      <label class="param">top_k <input id="topk" type="number" step="1" min="0" value="0"></label>
+      <label class="param">top_p <input id="topp" type="number" step="0.01" min="0" max="1" value="1"></label>
+      <label class="param">min_p <input id="minp" type="number" step="0.01" min="0" max="1" value="0"></label>
+      <label class="param">rep <input id="reppen" type="number" step="0.01" min="0" value="1"></label>
+    </div>
+    <div class="cluster history">
+      <button id="prev" disabled aria-label="Previous entry">Prev</button>
+      <span id="historyStatus" class="status">0/0</span>
+      <button id="next" disabled aria-label="Next entry">Next</button>
+    </div>
+    <span id="status" class="status">idle</span>
+  </div>
+  <textarea id="pad" spellcheck="false" placeholder="Type or paste context here, then press Generate."></textarea>
+
+  <script>
+    (() => {
+      const $ = id => document.getElementById(id);
+      const state = { controller: null, base: '', gen: '', history: [], histPos: null, ignoreLog: false };
+      const newId = () => crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
+      const getHashId = () => (location.hash || '').replace(/^#/, '') || null;
+      const setHash = id => { if (id) location.hash = id; };
+
+      const withLogPaused = fn => {
+        state.ignoreLog = true;
+        try { fn(); } finally { state.ignoreLog = false; }
+      };
+
+      const currentIndex = () => state.histPos ?? state.history.length - 1;
+      const canPrev = () => state.history.length > 0 && currentIndex() > 0;
+      const canNext = () => state.history.length > 0 && currentIndex() < state.history.length - 1;
+
+      const fitPad = () => {
+        const pad = $('pad');
+        const bar = document.querySelector('.bar');
+        const min = Math.max(0, window.innerHeight - (bar?.offsetHeight || 0));
+        pad.style.height = 'auto';
+        pad.style.height = Math.max(min, pad.scrollHeight) + 'px';
+      };
+
+      const updateHistoryStatus = () => {
+        const total = state.history.length;
+        const pos = state.histPos == null ? total : state.histPos + 1;
+        $('historyStatus').textContent = `${pos}/${total}`;
+        $('prev').disabled = !!state.controller || !canPrev();
+        $('next').disabled = !!state.controller || !canNext();
+      };
+
+      const addEntry = entry => {
+        const normalized = {
+          index: typeof entry.index === 'number' ? entry.index : state.history.length,
+          ts: entry.ts,
+          ms: entry.ms,
+          params: entry.params || {},
+          text: entry.text ?? $('pad').value,
+          id: entry.id || newId()
+        };
+        const existingIdx = normalized.id ? state.history.findIndex(e => e?.id === normalized.id) : -1;
+        const nextHistory = existingIdx === -1
+          ? [...state.history, normalized]
+          : state.history.map((item, i) => (i === existingIdx ? normalized : item));
+        nextHistory.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+        state.history = nextHistory;
+        const foundIdx = state.history.findIndex(e => e.id === normalized.id);
+        state.histPos = foundIdx === -1 ? state.history.length - 1 : foundIdx;
+        setHash(normalized.id);
+        updateHistoryStatus();
+      };
+
+      const logChange = text => {
+        if (state.ignoreLog) return;
+        const id = newId();
+        const ts = Date.now();
+        fetch('/history', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, ts: ts / 1000, ms: ts, id, params: getParams() })
+        })
+          .then(res => res.ok ? res.json() : null)
+          .then(data => { if (data?.entry) addEntry(data.entry); })
+          .catch(err => console.error('history post failed', err));
+      };
+
+      const getParams = () => {
+        const num = (id, fallback, parser = parseFloat) => {
+          const n = parser($(id).value);
+          return Number.isFinite(n) ? n : fallback;
+        };
+        return {
+          temperature: num('temp', 1, parseFloat),
+          top_k: num('topk', 0, parseInt),
+          top_p: num('topp', 1, parseFloat),
+          min_p: num('minp', 0, parseFloat),
+          repetition_penalty: num('reppen', 1, parseFloat)
+        };
+      };
+
+      const setParams = params => {
+        if (!params) return;
+        const set = (id, val) => {
+          if (val === undefined || val === null) return;
+          const el = $(id);
+          if (el) el.value = val;
+        };
+        set('temp', params.temperature);
+        set('topk', params.top_k);
+        set('topp', params.top_p);
+        set('minp', params.min_p);
+        set('reppen', params.repetition_penalty);
+      };
+
+      const showEntry = idx => {
+        if (idx < 0 || idx >= state.history.length) return;
+        state.histPos = idx;
+        withLogPaused(() => {
+          $('pad').value = state.history[idx].text ?? '';
+          setParams(state.history[idx].params);
+          fitPad();
+        });
+        setHash(state.history[idx].id);
+        updateHistoryStatus();
+      };
+
+      const showById = id => {
+        if (!id) return false;
+        const idx = state.history.findIndex(e => e?.id === id);
+        if (idx === -1) return false;
+        showEntry(idx);
+        return true;
+      };
+
+      const fetchEntryById = async id => {
+        if (!id) return false;
+        try {
+          const res = await fetch(`/history?id=${encodeURIComponent(id)}`);
+          if (!res.ok) return false;
+          const data = await res.json();
+          if (!data?.entry) return false;
+          addEntry({ ...data.entry, params: data.entry.params || {} });
+          showById(id);
+          return true;
+        } catch (err) {
+          console.warn('history lookup failed', err);
+          return false;
+        }
+      };
+
+      const setRunning = on => {
+        $('generate').disabled = on;
+        $('stop').disabled = !on;
+        $('pad').readOnly = on;
+        $('status').textContent = on ? 'generating…' : 'idle';
+        updateHistoryStatus();
+      };
+
+      const stop = () => {
+        if (state.controller) state.controller.abort();
+        state.controller = null;
+        setRunning(false);
+        $('status').textContent = 'stopped';
+      };
+
+      const mergeContent = text => {
+        if (text.startsWith(state.gen)) state.gen = text;
+        else state.gen += text;
+        $('pad').value = state.base + state.gen;
+        fitPad();
+        logChange($('pad').value);
+      };
+
+      const handleEvent = chunk => {
+        if (chunk === '[DONE]') return stop();
+        try {
+          const msg = JSON.parse(chunk);
+          const piece = msg.content ?? msg.token ?? msg.text ?? '';
+          if (piece) mergeContent(piece);
+          if (msg.stop) stop();
+        } catch (err) {
+          console.error('bad chunk', chunk, err);
+        }
+      };
+
+      const pumpStream = async res => {
+        const reader = res.body?.getReader();
+        if (!reader) throw new Error('No stream from server');
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let split;
+          while ((split = buffer.indexOf('\n\n')) >= 0) {
+            const packet = buffer.slice(0, split);
+            buffer = buffer.slice(split + 2);
+            packet.split(/\n/).forEach(line => {
+              const data = line.replace(/^data:\s*/, '').trim();
+              if (data) handleEvent(data);
+            });
+          }
+        }
+        if (buffer.trim()) {
+          buffer.split(/\n/).forEach(line => {
+            const data = line.replace(/^data:\s*/, '').trim();
+            if (data) handleEvent(data);
+          });
+        }
+      };
+
+      const generate = async () => {
+        stop();
+        state.base = $('pad').value;
+        state.gen = '';
+        const prompt = state.base;
+        if (!prompt.trim()) {
+          $('status').textContent = 'Nothing to generate.';
+          return;
+        }
+        setRunning(true);
+        $('status').textContent = 'generating…';
+        state.controller = new AbortController();
+        try {
+          const res = await fetch('http://localhost:8055/completion', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              prompt,
+              stream: true,
+              ...getParams()
+            }),
+            signal: state.controller.signal
+          });
+          if (!res.ok) throw new Error(`Server ${res.status}`);
+          await pumpStream(res);
+          $('status').textContent = 'done';
+        } catch (err) {
+          if (err.name === 'AbortError') $('status').textContent = 'stopped';
+          else $('status').textContent = `error: ${err.message}`;
+        } finally {
+          setRunning(false);
+          state.controller = null;
+        }
+      };
+
+      $('generate').addEventListener('click', generate);
+      $('stop').addEventListener('click', stop);
+      $('prev').addEventListener('click', () => showEntry(currentIndex() - 1));
+      $('next').addEventListener('click', () => showEntry(currentIndex() + 1));
+      document.addEventListener('keydown', e => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') generate();
+      });
+      $('pad').addEventListener('input', () => { fitPad(); logChange($('pad').value); });
+      ['temp', 'topk', 'topp', 'minp', 'reppen'].forEach(id => {
+        const el = $(id);
+        if (el) el.addEventListener('input', () => logChange($('pad').value));
+      });
+
+      const loadHistory = async () => {
+        try {
+          const res = await fetch('/history');
+          if (!res.ok) throw new Error('history fetch failed');
+          const data = await res.json();
+          state.history = (data.entries ?? []).sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).map(entry => ({
+            ...entry,
+            id: entry.id || newId(),
+            params: entry.params || {}
+          }));
+          state.histPos = state.history.length ? state.history.length - 1 : null;
+          const hashed = getHashId();
+          let found = false;
+          if (hashed) {
+            found = showById(hashed);
+            if (!found) found = await fetchEntryById(hashed);
+          }
+          if (!found && state.histPos != null) showEntry(state.histPos);
+          fitPad();
+        } catch (err) {
+          console.warn(err);
+        } finally {
+          updateHistoryStatus();
+        }
+      };
+
+      setRunning(false);
+      loadHistory();
+      window.addEventListener('hashchange', () => {
+        const id = getHashId();
+        if (!id) return;
+        if (!showById(id)) fetchEntryById(id);
+      });
+      window.addEventListener('resize', fitPad);
+      fitPad();
+    })();
+  </script>
+</body>
+</html>
