@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Loom History Calendar</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #e5e7eb;
+      --paper: #0b1220;
+      --accent: #9ca3af;
+      --muted: #94a3b8;
+      --border: #1f2937;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font: 14px/1.5 "Iosevka", "JetBrains Mono", "SFMono-Regular", monospace;
+      color: var(--ink);
+      background: var(--paper);
+      display: flex;
+      flex-direction: column;
+    }
+    .bar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      padding: 12px 14px;
+      background: #0f172a;
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+    .cluster { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    button {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font: inherit;
+      cursor: pointer;
+      background: #111827;
+      color: var(--ink);
+      transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+    }
+    button:active { transform: translateY(1px); }
+    button.primary { background: var(--accent); color: #0b1220; }
+    button:disabled { cursor: not-allowed; opacity: 0.5; box-shadow: none; transform: none; }
+    main { padding: 16px; flex: 1; display: flex; flex-direction: column; gap: 12px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+    }
+    .card {
+      background: #0f172a;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 120ms ease, transform 120ms ease;
+    }
+    .card:hover { border-color: var(--accent); transform: translateY(-1px); }
+    .card h3, .card h4 {
+      margin: 0;
+      font-size: 14px;
+      color: var(--ink);
+    }
+    .muted { color: var(--muted); font-size: 12px; }
+    .preview {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .section-title { font-weight: 600; color: var(--muted); letter-spacing: 0.02em; }
+    .entry-list { display: flex; flex-direction: column; gap: 8px; }
+    .entry {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: #0f172a;
+    }
+    .entry-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    a.entry-link { color: var(--accent); text-decoration: none; font-size: 12px; }
+    a.entry-link:hover { text-decoration: underline; }
+    .pill { padding: 2px 6px; border-radius: 10px; background: #111827; border: 1px solid var(--border); font-size: 11px; color: var(--muted); }
+    .crumbs { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .crumbs .pill.active { background: var(--accent); color: #0b1220; border-color: var(--accent); }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .status { color: var(--muted); font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <div class="cluster">
+      <button id="viewMonth" class="primary">Month</button>
+      <button id="viewWeek">Week</button>
+      <button id="viewDay">Day</button>
+    </div>
+    <div class="cluster">
+      <button id="prev">&#8592; Prev</button>
+      <button id="next">Next &#8594;</button>
+      <span id="label" class="status"></span>
+    </div>
+    <div class="crumbs" id="crumbs"></div>
+    <span id="status" class="status"></span>
+  </div>
+  <main id="content"></main>
+
+  <script>
+    (() => {
+      const $ = id => document.getElementById(id);
+      const content = $('content');
+      const padLink = id => `/#${encodeURIComponent(id)}`;
+      const fmt = (date, opts) => new Intl.DateTimeFormat(undefined, opts).format(date);
+      const startOfDay = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      const startOfMonth = d => new Date(d.getFullYear(), d.getMonth(), 1);
+      const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+      const addMonths = (d, n) => new Date(d.getFullYear(), d.getMonth() + n, 1);
+      const startOfWeek = d => {
+        const day = d.getDay(); // 0 Sunday
+        const offset = day === 0 ? -6 : 1 - day; // Monday start
+        return addDays(startOfDay(d), offset);
+      };
+      const truncate = (text, len = 120) => {
+        if (!text) return '(empty)';
+        const clean = text.replace(/\s+/g, ' ').trim();
+        return clean.length > len ? clean.slice(0, len) + '…' : clean;
+      };
+
+      const state = {
+        entries: [],
+        view: 'month',
+        focus: startOfMonth(new Date()),
+        dayFocus: startOfDay(new Date())
+      };
+      let suppressHash = false;
+
+      const status = msg => { $('status').textContent = msg || ''; };
+      const toISO = date => {
+        if (!date) return '';
+        const y = date.getFullYear();
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const d = String(date.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+      };
+      const fromISO = str => {
+        if (!str) return null;
+        const parts = str.split('-').map(Number);
+        if (parts.length !== 3 || parts.some(n => Number.isNaN(n))) return null;
+        return new Date(parts[0], parts[1] - 1, parts[2]);
+      };
+
+      const filterRange = (start, end) => state.entries.filter(e => e.ms >= start.getTime() && e.ms < end.getTime());
+
+      const syncHash = () => {
+        if (suppressHash) return;
+        const params = new URLSearchParams();
+        params.set('view', state.view);
+        if (state.focus) params.set('focus', toISO(state.focus));
+        if (state.dayFocus) params.set('day', toISO(state.dayFocus));
+        const next = params.toString();
+        if (location.hash.replace(/^#/, '') !== next) {
+          location.hash = next;
+        }
+      };
+
+      const applyHash = () => {
+        const raw = location.hash.replace(/^#/, '');
+        if (!raw) return;
+        const params = new URLSearchParams(raw);
+        suppressHash = true;
+        try {
+          const view = params.get('view');
+          if (view === 'month' || view === 'week' || view === 'day') state.view = view;
+          const focusIso = params.get('focus');
+          const focusDate = fromISO(focusIso);
+          if (focusDate) state.focus = focusDate;
+          const dayIso = params.get('day');
+          const dayDate = fromISO(dayIso);
+          if (dayDate) state.dayFocus = startOfDay(dayDate);
+        } finally {
+          suppressHash = false;
+        }
+      };
+
+      const setView = view => {
+        state.view = view;
+        $('viewMonth').classList.toggle('primary', view === 'month');
+        $('viewWeek').classList.toggle('primary', view === 'week');
+        $('viewDay').classList.toggle('primary', view === 'day');
+        render();
+      };
+
+      const shiftFocus = delta => {
+        if (state.view === 'month') state.focus = addMonths(state.focus, delta);
+        else if (state.view === 'week') state.focus = addDays(state.focus, 7 * delta);
+        else state.dayFocus = addDays(state.dayFocus, delta);
+        render();
+      };
+
+      const renderCrumbs = parts => {
+        const holder = $('crumbs');
+        holder.innerHTML = '';
+        parts.forEach(p => {
+          const pill = document.createElement('span');
+          pill.className = `pill${p.active ? ' active' : ''}`;
+          pill.textContent = p.label;
+          if (p.onClick) pill.addEventListener('click', p.onClick);
+          holder.appendChild(pill);
+        });
+      };
+
+      const renderMonth = () => {
+        const year = state.focus.getFullYear();
+        $('label').textContent = `${year}`;
+        renderCrumbs([{ label: 'Month', active: true }]);
+        const grid = document.createElement('div');
+        grid.className = 'grid';
+        for (let m = 0; m < 12; m++) {
+          const start = new Date(year, m, 1);
+          const end = new Date(year, m + 1, 1);
+          const bucket = filterRange(start, end);
+          const latest = bucket[bucket.length - 1];
+          const card = document.createElement('div');
+          card.className = 'card';
+          card.innerHTML = `
+            <h3>${fmt(start, { month: 'long' })}</h3>
+            <div class="muted">${bucket.length} entr${bucket.length === 1 ? 'y' : 'ies'}</div>
+            <div class="preview">${truncate(latest?.text)}</div>
+          `;
+          card.addEventListener('click', () => {
+            state.focus = start;
+            setView('week');
+          });
+          grid.appendChild(card);
+        }
+        content.innerHTML = '<div class="section-title">Months</div>';
+        content.appendChild(grid);
+      };
+
+      const renderWeek = () => {
+        const monthStart = startOfMonth(state.focus);
+        const monthEnd = addMonths(monthStart, 1);
+        $('label').textContent = fmt(monthStart, { month: 'long', year: 'numeric' });
+        renderCrumbs([
+          { label: 'Month', onClick: () => setView('month') },
+          { label: 'Week', active: true }
+        ]);
+        const weeks = [];
+        let cursor = startOfWeek(monthStart);
+        while (cursor < monthEnd) {
+          const end = addDays(cursor, 7);
+          const inMonth = !(end <= monthStart || cursor >= monthEnd);
+          if (inMonth) weeks.push({ start: cursor, end });
+          cursor = end;
+        }
+        const grid = document.createElement('div');
+        grid.className = 'grid';
+        weeks.forEach(({ start, end }) => {
+          const bucket = filterRange(start, end);
+          const latest = bucket[bucket.length - 1];
+          const label = `${fmt(start, { month: 'short', day: 'numeric' })} – ${fmt(addDays(end, -1), { month: 'short', day: 'numeric' })}`;
+          const card = document.createElement('div');
+          card.className = 'card';
+          card.innerHTML = `
+            <h3>${label}</h3>
+            <div class="muted">${bucket.length} entr${bucket.length === 1 ? 'y' : 'ies'}</div>
+            <div class="preview">${truncate(latest?.text)}</div>
+          `;
+          card.addEventListener('click', () => {
+            state.focus = start;
+            state.dayFocus = start;
+            setView('day');
+          });
+          grid.appendChild(card);
+        });
+        content.innerHTML = '<div class="section-title">Weeks</div>';
+        content.appendChild(grid);
+      };
+
+      const renderDay = () => {
+        const day = startOfDay(state.dayFocus);
+        const nextDay = addDays(day, 1);
+        const weekStart = startOfWeek(day);
+        const weekLabel = `${fmt(weekStart, { month: 'short', day: 'numeric' })} – ${fmt(addDays(weekStart, 6), { month: 'short', day: 'numeric' })}`;
+        $('label').textContent = fmt(day, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+        renderCrumbs([
+          { label: 'Month', onClick: () => setView('month') },
+          { label: 'Week', onClick: () => { state.focus = weekStart; setView('week'); } },
+          { label: 'Day', active: true }
+        ]);
+        const dayEntries = filterRange(day, nextDay);
+        const dayGrid = document.createElement('div');
+        dayGrid.className = 'grid';
+        for (let i = 0; i < 7; i++) {
+          const d = addDays(weekStart, i);
+          const start = startOfDay(d);
+          const end = addDays(start, 1);
+          const bucket = filterRange(start, end);
+          const card = document.createElement('div');
+          card.className = 'card';
+          if (start.getTime() === day.getTime()) {
+            const accent = varColorAccent();
+            card.style.borderColor = accent;
+            card.style.boxShadow = `0 0 0 1px ${accent}`;
+          }
+          card.innerHTML = `
+            <h4>${fmt(d, { weekday: 'short' })}</h4>
+            <div class="muted">${fmt(d, { month: 'short', day: 'numeric' })}</div>
+            <div class="muted">${bucket.length} entr${bucket.length === 1 ? 'y' : 'ies'}</div>
+            <div class="preview">${truncate(bucket[bucket.length - 1]?.text)}</div>
+          `;
+          card.addEventListener('click', () => {
+            state.dayFocus = start;
+            render();
+          });
+          dayGrid.appendChild(card);
+        }
+
+        const hourGrid = document.createElement('div');
+        hourGrid.className = 'grid';
+        for (let h = 0; h < 24; h++) {
+          const hStart = new Date(day.getFullYear(), day.getMonth(), day.getDate(), h);
+          const hEnd = new Date(day.getFullYear(), day.getMonth(), day.getDate(), h + 1);
+          const bucket = filterRange(hStart, hEnd);
+          const card = document.createElement('div');
+          card.className = 'card';
+          card.innerHTML = `
+            <h4>${String(h).padStart(2, '0')}:00</h4>
+            <div class="muted">${bucket.length} entr${bucket.length === 1 ? 'y' : 'ies'}</div>
+            <div class="preview">${truncate(bucket[bucket.length - 1]?.text)}</div>
+          `;
+          if (!bucket.length) card.style.opacity = 0.6;
+          hourGrid.appendChild(card);
+        }
+
+        const list = document.createElement('div');
+        list.className = 'entry-list';
+        dayEntries.forEach(entry => {
+          const wrapper = document.createElement('div');
+          wrapper.className = 'entry';
+          const header = document.createElement('div');
+          header.className = 'entry-header';
+          const time = fmt(new Date(entry.ms), { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+          header.innerHTML = `<span class="pill">${time}</span>`;
+          if (entry.id) {
+            const link = document.createElement('a');
+            link.className = 'entry-link';
+            link.href = padLink(entry.id);
+            link.textContent = 'Open';
+            header.appendChild(link);
+          }
+          wrapper.appendChild(header);
+          const body = document.createElement('div');
+          body.className = 'preview';
+          body.textContent = truncate(entry.text, 240);
+          wrapper.appendChild(body);
+          list.appendChild(wrapper);
+        });
+
+        content.innerHTML = `<div class="section-title">Week (${weekLabel})</div>`;
+        content.appendChild(dayGrid);
+        const dayTitle = document.createElement('div');
+        dayTitle.className = 'section-title';
+        dayTitle.textContent = 'Hours';
+        content.appendChild(dayTitle);
+        content.appendChild(hourGrid);
+        const entriesTitle = document.createElement('div');
+        entriesTitle.className = 'section-title';
+        entriesTitle.textContent = `Entries (${dayEntries.length})`;
+        content.appendChild(entriesTitle);
+        content.appendChild(list);
+      };
+
+      const varColorAccent = () => {
+        const val = getComputedStyle(document.documentElement).getPropertyValue('--accent');
+        return (val && val.trim()) || '#9ca3af';
+      };
+
+      const render = () => {
+        if (!state.entries.length) {
+          content.innerHTML = '<div class="status">No history entries found.</div>';
+          syncHash();
+          return;
+        }
+        if (state.view === 'month') renderMonth();
+        else if (state.view === 'week') renderWeek();
+        else renderDay();
+        syncHash();
+      };
+
+      const load = async () => {
+        try {
+          status('Loading history…');
+          const res = await fetch('/history');
+          if (!res.ok) throw new Error(`history fetch failed (${res.status})`);
+          const data = await res.json();
+          const entries = (data.entries || []).map(entry => {
+            const ms = entry.ms || (entry.ts ? entry.ts * 1000 : Date.now());
+            return { ...entry, ms };
+          }).sort((a, b) => a.ms - b.ms);
+          state.entries = entries;
+          const latest = entries[entries.length - 1];
+          if (latest) {
+            state.focus = startOfMonth(new Date(latest.ms));
+            state.dayFocus = startOfDay(new Date(latest.ms));
+          }
+          applyHash();
+          status('');
+          render();
+        } catch (err) {
+          console.error(err);
+          status('Failed to load history');
+          content.innerHTML = '<div class="status">Could not load history.</div>';
+        }
+      };
+
+      $('viewMonth').addEventListener('click', () => setView('month'));
+      $('viewWeek').addEventListener('click', () => setView('week'));
+      $('viewDay').addEventListener('click', () => setView('day'));
+      $('prev').addEventListener('click', () => shiftFocus(-1));
+      $('next').addEventListener('click', () => shiftFocus(1));
+      window.addEventListener('hashchange', () => {
+        applyHash();
+        render();
+      });
+
+      load();
+    })();
+  </script>
+</body>
+</html>

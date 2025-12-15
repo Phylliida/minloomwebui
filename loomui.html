@@ -88,7 +88,6 @@
 <body>
   <div class="bar">
     <div class="cluster">
-      <button id="undoGen" disabled>Undo Gen</button>
       <button id="generate" class="primary">Generate</button>
     </div>
     <div class="cluster params">
@@ -488,9 +487,17 @@
       $('prev').addEventListener('click', () => showEntry(currentIndex() - 1));
       $('next').addEventListener('click', () => showEntry(currentIndex() + 1));
       document.addEventListener('keydown', e => {
-        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        const mod = e.metaKey || e.ctrlKey;
+        if (mod && e.key === 'Enter') {
           if (state.controller) stop();
           else generate();
+        } else if (mod && (e.key === 'z' || e.key === 'Z')) {
+          const pad = $('pad');
+          const focusedPad = document.activeElement === pad;
+          const padEditable = pad && !pad.readOnly;
+          if (focusedPad && padEditable) return; // let native undo work while editing
+          e.preventDefault();
+          undoGeneration();
         }
       });
       $('pad').addEventListener('input', () => { fitPad(); logChange($('pad').value); });

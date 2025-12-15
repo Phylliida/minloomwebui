@@ -105,6 +105,11 @@ def index():
     return send_from_directory(app.static_folder, "loomui.html")
 
 
+@app.route("/calendar")
+def calendar():
+    return send_from_directory(app.static_folder, "calendar.html")
+
+
 @app.route("/history", methods=["GET", "POST"])
 def history():
     if request.method == "POST":
