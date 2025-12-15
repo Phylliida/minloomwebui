@@ -82,6 +82,7 @@
     }
     .param.stop input { width: 200px; }
     .param.prefix input { width: 180px; }
+    .param.postfix input { width: 180px; }
   </style>
 </head>
 <body>
@@ -99,6 +100,7 @@
       <label class="param">max_tok <input id="maxtok" type="number" step="1" min="1" value="512"></label>
       <label class="param stop">stop <input id="stopTokens" type="text" placeholder="comma-separated"></label>
       <label class="param prefix">prefix <input id="prefix" type="text" placeholder="prepend on generate"></label>
+      <label class="param postfix">postfix <input id="postfix" type="text" placeholder="append on stop"></label>
     </div>
     <div class="cluster history">
       <button id="prev" disabled aria-label="Previous entry">Prev</button>
@@ -113,7 +115,7 @@
   <script>
     (() => {
       const $ = id => document.getElementById(id);
-      const state = { controller: null, base: '', gen: '', history: [], histPos: null, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false };
+      const state = { controller: null, base: '', gen: '', history: [], histPos: null, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false };
       const newId = () => crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
       const getHashId = () => (location.hash || '').replace(/^#/, '') || null;
       const setHash = id => { if (id) location.hash = id; };
@@ -144,6 +146,8 @@
         .map(s => s.replace(/\\n/g, '\n'));
       const getPrefixRaw = () => $('prefix')?.value ?? '';
       const getPrefix = () => getPrefixRaw().replace(/\\n/g, '\n');
+      const getPostfixRaw = () => $('postfix')?.value ?? '';
+      const getPostfix = () => getPostfixRaw().replace(/\\n/g, '\n');
 
       const fitPad = stickToBottomInput => {
         const pad = $('pad');
@@ -218,6 +222,8 @@
         const stopTokens = parseStopTokens(stopRaw);
         const prefixRaw = getPrefixRaw();
         const prefix = getPrefix();
+        const postfixRaw = getPostfixRaw();
+        const postfix = getPostfix();
         return {
           temperature: num('temp', 1, parseFloat),
           top_k: num('topk', 0, parseInt),
@@ -228,7 +234,9 @@
           stop: stopTokens.length ? stopTokens : undefined,
           stop_raw: stopRaw || undefined,
           prefix: prefix || undefined,
-          prefix_raw: prefixRaw || undefined
+          prefix_raw: prefixRaw || undefined,
+          postfix: postfix || undefined,
+          postfix_raw: postfixRaw || undefined
         };
       };
 
@@ -259,6 +267,11 @@
         if (prefixField) {
           const raw = params.prefix_raw ?? params.prefix ?? params.input_prefix ?? '';
           prefixField.value = typeof raw === 'string' ? raw.replace(/\n/g, '\\n') : raw;
+        }
+        const postfixField = $('postfix');
+        if (postfixField) {
+          const raw = params.postfix_raw ?? params.postfix ?? params.output_postfix ?? '';
+          postfixField.value = typeof raw === 'string' ? raw.replace(/\n/g, '\\n') : raw;
         }
       };
 
@@ -319,8 +332,31 @@
         setUndoEnabled();
       };
 
+      const applyPostfix = () => {
+        if (state.postfixApplied) return;
+        const postfix = getPostfix();
+        const pad = $('pad');
+        if (!pad || !postfix) {
+          state.postfixApplied = true;
+          return;
+        }
+        const stickToBottom = isNearBottom();
+        const wasFocused = document.activeElement === pad;
+        const atEnd = wasFocused && pad.selectionStart === pad.value.length && pad.selectionEnd === pad.value.length;
+        state.gen += postfix;
+        pad.value = state.base + state.gen;
+        if (wasFocused && atEnd) {
+          const pos = pad.value.length;
+          pad.selectionStart = pos;
+          pad.selectionEnd = pos;
+        }
+        state.postfixApplied = true;
+        fitPad(stickToBottom);
+      };
+
       const logGenerationEnd = () => {
         if (!state.runId || state.runLoggedEnd) return;
+        applyPostfix();
         state.runLoggedEnd = true;
         logChange();
       };
@@ -413,6 +449,7 @@
         const prompt = state.base;
         state.runId = newId();
         state.runLoggedEnd = false;
+        state.postfixApplied = false;
         logChange(state.base);
         setRunning(true);
         $('status').textContent = 'generating…';
@@ -457,7 +494,7 @@
         }
       });
       $('pad').addEventListener('input', () => { fitPad(); logChange($('pad').value); });
-      ['temp', 'topk', 'topp', 'minp', 'reppen', 'maxtok', 'stopTokens', 'prefix'].forEach(id => {
+      ['temp', 'topk', 'topp', 'minp', 'reppen', 'maxtok', 'stopTokens', 'prefix', 'postfix'].forEach(id => {
         const el = $(id);
         if (el) el.addEventListener('input', () => logChange($('pad').value));
       });
