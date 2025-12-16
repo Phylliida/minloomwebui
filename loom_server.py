@@ -14,6 +14,36 @@ _history_count: int | None = None
 _index_to_id: list[str | None] = []
 
 
+def normalize_children(children: object) -> list[dict[str, float]]:
+    if not isinstance(children, list) or not children:
+        return []
+    normalized: list[dict[str, float]] = []
+    for child in children:
+        if not isinstance(child, dict):
+            return []
+        child_id = child.get("id")
+        child_ms = child.get("ms")
+        if not isinstance(child_id, str) or not isinstance(child_ms, (int, float)):
+            return []
+        normalized.append({"id": child_id, "ms": float(child_ms)})
+    by_id: dict[str, dict[str, float]] = {}
+    for child in normalized:
+        cid = child["id"]
+        existing = by_id.get(cid)
+        if existing is None or child["ms"] > existing["ms"]:
+            by_id[cid] = child
+    return sorted(by_id.values(), key=lambda item: (-item["ms"], item["id"]))
+
+
+def upsert_child(children: list[dict[str, float]] | None, child_id: str, child_ms: float) -> list[dict[str, float]]:
+    if not isinstance(child_id, str) or not isinstance(child_ms, (int, float)):
+        return normalize_children(children or [])
+    current = normalize_children(children or [])
+    filtered = [child for child in current if child.get("id") != child_id]
+    filtered.append({"id": child_id, "ms": float(child_ms)})
+    return normalize_children(filtered)
+
+
 def history_count() -> int:
     global _history_count, _index_to_id
     if _history_count is None:
@@ -84,6 +114,7 @@ def append_entry(
                 "action": "add_children",
                 "child": entry["id"],
                 "parent": parent_id,
+                "ms": entry["ms"],
             }
             fh.write(json.dumps(append_child_action, ensure_ascii=False) + "\n")
     _history_count += 1
@@ -101,7 +132,8 @@ def normalize_entry(data: dict, fallback_index: int) -> dict:
         "params": data.get("params") or {},
         "pre_gen_index": data.get("pre_gen_index"),
         "parent": data.get("parent") if isinstance(data.get("parent"), str) else None,
-        "children": data.get("children") if isinstance(data.get("children"), list) else [],
+        "children": normalize_children(data.get("children")),
+        "lastChildVisited": data.get("lastChildVisited") if isinstance(data.get("lastChildVisited"), str) else None,
     }
 
 
@@ -141,12 +173,38 @@ def read_entries() -> list[dict]:
                 parent_entry = entries_by_id.get(parent_id)
                 if parent_entry is None:
                     continue
-                parent_entry.setdefault("children", [])
-                if child_id not in parent_entry["children"]:
-                    parent_entry["children"].append(child_id)
+                child_ms = data.get("ms")
+                if not isinstance(child_ms, (int, float)):
+                    child_entry = entries_by_id.get(child_id)
+                    child_ms = child_entry.get("ms") if isinstance(child_entry, dict) else None
+                if child_ms is None:
+                    continue
+                parent_entry["children"] = upsert_child(parent_entry.get("children"), child_id, float(child_ms))
+            elif action == "last_child_visited":
+                parent_id = data.get("parent")
+                child_id = data.get("child")
+                if not isinstance(parent_id, str) or not isinstance(child_id, str):
+                    continue
+                parent_entry = entries_by_id.get(parent_id)
+                if parent_entry is None:
+                    continue
+                parent_entry["lastChildVisited"] = child_id
+                existing_children = normalize_children(parent_entry.get("children"))
+                if any(child.get("id") == child_id for child in existing_children):
+                    parent_entry["children"] = existing_children
+                    continue
+                child_ms = data.get("ms")
+                if not isinstance(child_ms, (int, float)):
+                    child_entry = entries_by_id.get(child_id)
+                    child_ms = child_entry.get("ms") if isinstance(child_entry, dict) else None
+                if child_ms is None:
+                    parent_entry["children"] = existing_children
+                    continue
+                parent_entry["children"] = upsert_child(existing_children, child_id, float(child_ms))
     for entry in entries_by_index.values():
-        entry.setdefault("children", [])
-        entry["children"] = sorted([c for c in entry["children"] if isinstance(c, str)])
+        entry["children"] = normalize_children(entry.get("children"))
+        if not isinstance(entry.get("lastChildVisited"), str):
+            entry["lastChildVisited"] = None
     return [entries_by_index[idx] for idx in sorted(entries_by_index)]
 
 
@@ -225,9 +283,40 @@ def history():
         return jsonify({"error": "not found"}), 404
     entries = read_entries()
     if request.args.get("meta"):
-        keep = {"index", "id", "parent", "children", "pre_gen_index", "ts", "ms"}
+        keep = {"index", "id", "parent", "children", "pre_gen_index", "ts", "ms", "lastChildVisited"}
         entries = [{k: v for k, v in entry.items() if k in keep} for entry in entries]
     return jsonify({"entries": entries, "total": len(entries)})
+
+
+@app.route("/history/action", methods=["POST"])
+def history_action():
+    payload = request.get_json(silent=True) or {}
+    action = payload.get("action")
+    if action != "last_child_visited":
+        return jsonify({"error": "unknown action"}), 400
+    parent_id = payload.get("parent")
+    child_id = payload.get("child")
+    if not isinstance(parent_id, str) or not isinstance(child_id, str):
+        return jsonify({"error": "invalid ids"}), 400
+    ms_value = payload.get("ms")
+    action_ms = float(ms_value) if isinstance(ms_value, (int, float)) else time.time() * 1000.0
+    HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with HISTORY_FILE.open("a", encoding="utf-8") as fh:
+        fh.write(
+            json.dumps(
+                {
+                    "action": "last_child_visited",
+                    "parent": parent_id,
+                    "child": child_id,
+                    "ms": action_ms,
+                },
+                ensure_ascii=False,
+            )
+            + "\n"
+        )
+    return jsonify(
+        {"ok": True, "action": "last_child_visited", "parent": parent_id, "child": child_id, "ms": action_ms}
+    )
 
 
 if __name__ == "__main__":

@@ -110,6 +110,7 @@
       <button id="parentJump" aria-label="Parent">⬆</button>
       <button id="childJump" aria-label="First child">⬇</button>
       <button id="sibNext" aria-label="Next sibling">⟶</button>
+      <span id="siblingCount" class="status"></span>
     </div>
     <div class="cluster params">
       <label class="param">T <input id="temp" type="number" step="0.1" min="0" value="1"></label>
@@ -140,9 +141,6 @@
   <textarea id="pad" spellcheck="false" placeholder="Type or paste context here, then press Generate."></textarea>
 
   <script>
-    function unique(list) {
-    return [...new Set(list)];
-  }
     (() => {
       const $ = id => document.getElementById(id);
       const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false };
@@ -197,49 +195,75 @@
         else window.scrollTo({ top: prevScroll });
       };
       const entryById = id => (id ? state.cache.get(id) : null);
-      const cleanChildren = kids => {
-        if (!Array.isArray(kids)) return [];
-        const seen = new Set();
-        const out = [];
-        kids.forEach(k => {
-          if (typeof k !== 'string' || seen.has(k)) return;
-          seen.add(k);
-          out.push(k);
+      const normalizeChildren = kids => {
+        if (!Array.isArray(kids) || !kids.length) return [];
+        let invalid = false;
+        const byId = new Map();
+        kids.forEach(child => {
+          if (invalid) return;
+          if (!child || typeof child !== 'object') { invalid = true; return; }
+          const id = typeof child.id === 'string' ? child.id : null;
+          const msVal = Number(child.ms);
+          if (!id || !Number.isFinite(msVal)) { invalid = true; return; }
+          const existing = byId.get(id);
+          if (!existing || msVal > existing.ms) byId.set(id, { id, ms: msVal });
         });
-        return out.sort();
+        if (invalid) return [];
+        return [...byId.values()].sort((a, b) => {
+          if (a.ms !== b.ms) return a.ms - b.ms;
+          return b.id.localeCompare(a.id);
+        });
       };
-      const sortChildIds = ids => {
-        return [...ids].sort((a, b) => {
-          const ea = entryById(a);
-          const eb = entryById(b);
-          const ai = ea?.index;
-          const bi = eb?.index;
-          if (Number.isFinite(ai) && Number.isFinite(bi)) return ai - bi;
-          if (Number.isFinite(ai)) return -1;
-          if (Number.isFinite(bi)) return 1;
-          return String(a).localeCompare(String(b));
-        });
+      const upsertChild = (kids, child) => {
+        const normalized = normalizeChildren(kids);
+        if (!child || typeof child.id !== 'string') return normalized;
+        const msVal = Number(child.ms);
+        if (!Number.isFinite(msVal)) return normalized;
+        const filtered = normalized.filter(c => c.id !== child.id);
+        filtered.push({ id: child.id, ms: msVal });
+        return normalizeChildren(filtered);
       };
       const storeEntry = entry => {
         const incomingId = entry.id || newId();
         const existing = state.cache.get(incomingId) || {};
+        const normalizedChildren = normalizeChildren(entry.children ?? existing.children);
         const normalized = {
           ...existing,
           ...entry,
           id: incomingId,
           params: entry.params || existing.params || {},
-          children: cleanChildren(entry.children ?? existing.children)
+          children: normalizedChildren,
+          lastChildVisited: typeof (entry.lastChildVisited ?? existing.lastChildVisited) === 'string'
+            ? (entry.lastChildVisited ?? existing.lastChildVisited)
+            : null
         };
         state.cache.set(incomingId, normalized);
         if (Number.isFinite(normalized.index)) state.total = Math.max(state.total, normalized.index + 1);
         if (normalized.parent) {
           const parent = state.cache.get(normalized.parent);
           if (parent) {
-            parent.children = sortChildIds([...(parent.children || []), normalized.id]);
+            parent.children = upsertChild(parent.children, { id: normalized.id, ms: normalized.ms ?? Date.now() });
             state.cache.set(parent.id, parent);
           }
         }
         return normalized;
+      };
+      const recordLastVisited = (parentId, childId) => {
+        if (!parentId || !childId) return;
+        const childEntry = entryById(childId);
+        const childMs = Number(childEntry?.ms);
+        const ms = Number.isFinite(childMs) ? childMs : Date.now();
+        fetch('/history/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'last_child_visited', parent: parentId, child: childId, ms })
+        }).catch(err => console.warn('last_child_visited log failed', err));
+        const parent = entryById(parentId);
+        if (parent) {
+          parent.lastChildVisited = childId;
+          parent.children = upsertChild(parent.children, { id: childId, ms });
+          state.cache.set(parentId, parent);
+        }
       };
       const ensureParentData = entry => {
         if (!entry?.parent) return;
@@ -274,6 +298,7 @@
         }
         updateChildSelector();
         updateSiblingButtons();
+        updateSiblingCount();
         updateParentButton();
         updateChildButton();
       };
@@ -372,38 +397,55 @@
       }
       function updateChildButton() {
         if (!childJump) return;
-        const kids = state.entry?.children ? state.entry.children.filter(Boolean) : [];
+        const kids = normalizeChildren(state.entry?.children);
         childJump.disabled = !kids.length;
       }
       function updateSiblingButtons() {
         if (!sibPrev || !sibNext) return;
         const entry = state.entry;
         const parent = entry?.parent ? entryById(entry.parent) : null;
-        const kids = parent?.children ? sortChildIds(parent.children) : [];
-        const pos = kids.indexOf(entry?.id);
+        const kids = normalizeChildren(parent?.children);
+        const ids = kids.map(k => k.id);
+        const pos = ids.indexOf(entry?.id);
         sibPrev.disabled = pos <= 0;
-        sibNext.disabled = pos === -1 || pos >= kids.length - 1;
+        sibNext.disabled = pos === -1 || pos >= ids.length - 1;
+      }
+      function updateSiblingCount() {
+        const label = $('siblingCount');
+        if (!label) return;
+        const entry = state.entry;
+        if (!entry?.parent) {
+          label.textContent = '0/0';
+          return;
+        }
+        const parent = entryById(entry.parent);
+        const kids = normalizeChildren(parent?.children);
+        const ids = kids.map(k => k.id);
+        const pos = ids.indexOf(entry.id);
+        const total = ids.length;
+        const current = pos >= 0 ? pos + 1 : 0;
+        label.textContent = `${current}/${total}`;
       }
       async function jumpSibling(delta) {
         const entry = state.entry;
         if (!entry?.parent) return;
         let parent = entryById(entry.parent);
         if (!parent) parent = await fetchEntry({ id: entry.parent });
-        if (!parent?.children) return;
-        const kids = sortChildIds(unique(parent.children));
-        const pos = kids.indexOf(entry.id);
-        const target = kids[pos + delta];
+        const kids = normalizeChildren(parent?.children);
+        const pos = kids.findIndex(k => k.id === entry.id);
+        const target = kids[pos + delta]?.id;
         if (target) await showId(target);
       }
       async function jumpFirstChild() {
         const entry = state.entry;
-        if (!entry?.children?.length) return;
-        const kids = sortChildIds(unique(entry.children));
-        if (kids[0]) await showId(kids[0]);
+        const kids = normalizeChildren(entry?.children);
+        if (!kids.length) return;
+        if (kids[0]?.id) await showId(kids[0].id);
       }
       async function jumpParent() {
         const entry = state.entry;
         if (!entry?.parent) return;
+        recordLastVisited(entry.parent, entry.id);
         await showId(entry.parent);
       }
       function updateChildSelector() {
@@ -418,7 +460,7 @@
           childSelect.disabled = true;
           return;
         }
-        const children = Array.isArray(entry.children) ? sortChildIds(entry.children) : [];
+        const children = normalizeChildren(entry.children);
         if (!children.length) {
           const opt = document.createElement('option');
           opt.value = '';
@@ -430,10 +472,10 @@
           opt.value = '';
           opt.textContent = 'choose child…';
           childSelect.appendChild(opt);
-          children.forEach(childId => {
+          children.forEach(child => {
             const o = document.createElement('option');
-            o.value = String(childId);
-            o.textContent = childOptionLabel(childId);
+            o.value = String(child.id);
+            o.textContent = childOptionLabel(child.id);
             childSelect.appendChild(o);
           });
           childSelect.disabled = false;
