@@ -440,7 +440,11 @@
         const entry = state.entry;
         const kids = normalizeChildren(entry?.children);
         if (!kids.length) return;
-        if (kids[0]?.id) await showId(kids[0].id);
+        const preferredId = entry.lastChildVisited;
+        const target = typeof preferredId === 'string' && kids.some(k => k.id === preferredId)
+          ? preferredId
+          : kids[0]?.id;
+        if (target) await showId(target);
       }
       async function jumpParent() {
         const entry = state.entry;
