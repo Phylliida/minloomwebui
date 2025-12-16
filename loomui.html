@@ -47,14 +47,14 @@
     }
     textarea {
       width: 100%;
-      padding: 12px;
+      padding: 14px;
       border: none;
       font: inherit;
       resize: none;
       background: transparent;
       color: var(--ink);
       outline: none;
-      min-height: calc(100vh - 52px);
+      field-sizing: content;
       overflow: hidden;
     }
     button {
@@ -273,7 +273,9 @@
       const setUndoEnabled = () => { if (undoButton) undoButton.disabled = state.lastPreGenIdx == null || !!state.controller; };
       const isNearBottom = (threshold = 48) => {
         const doc = document.documentElement;
-        return doc.scrollHeight - (window.scrollY + window.innerHeight) <= threshold;
+        const remaining = doc.scrollHeight - (window.scrollY + window.innerHeight);
+        if (remaining <= 0) return true; // already at the bottom (or no overflow)
+        return remaining <= threshold && window.scrollY > 0;
       };
       const getStopRaw = () => $('stopTokens')?.value ?? '';
       const parseStopTokens = val => (val || '').split(',').map(s => s.trim()).filter(Boolean).map(s => s.replace(/\\n/g, '\n'));
@@ -879,7 +881,7 @@
           const hashed = getHashId();
           if (hashed) await showId(hashed);
           else await fetchLatest();
-          fitPad();
+          fitPad(false);
         } catch (err) {
           console.warn(err);
         } finally {
@@ -893,7 +895,7 @@
         if (id) showId(id);
       });
       window.addEventListener('resize', fitPad);
-      fitPad();
+      fitPad(false);
     })();
   </script>
 </body>
