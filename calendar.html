@@ -140,7 +140,8 @@
         entries: [],
         view: 'month',
         focus: startOfMonth(new Date()),
-        dayFocus: startOfDay(new Date())
+        dayFocus: startOfDay(new Date()),
+        hourFocus: null
       };
       let suppressHash = false;
 
@@ -167,6 +168,7 @@
         params.set('view', state.view);
         if (state.focus) params.set('focus', toISO(state.focus));
         if (state.dayFocus) params.set('day', toISO(state.dayFocus));
+        if (state.hourFocus !== null && state.hourFocus !== undefined) params.set('hour', String(state.hourFocus));
         const next = params.toString();
         if (location.hash.replace(/^#/, '') !== next) {
           location.hash = next;
@@ -187,6 +189,13 @@
           const dayIso = params.get('day');
           const dayDate = fromISO(dayIso);
           if (dayDate) state.dayFocus = startOfDay(dayDate);
+          const hourVal = params.get('hour');
+          if (hourVal !== null && hourVal !== undefined && hourVal !== '') {
+            const h = parseInt(hourVal, 10);
+            state.hourFocus = Number.isFinite(h) && h >= 0 && h < 24 ? h : null;
+          } else {
+            state.hourFocus = null;
+          }
         } finally {
           suppressHash = false;
         }
@@ -194,6 +203,7 @@
 
       const setView = view => {
         state.view = view;
+        if (view !== 'day') state.hourFocus = null;
         $('viewMonth').classList.toggle('primary', view === 'month');
         $('viewWeek').classList.toggle('primary', view === 'week');
         $('viewDay').classList.toggle('primary', view === 'day');
@@ -203,7 +213,10 @@
       const shiftFocus = delta => {
         if (state.view === 'month') state.focus = addMonths(state.focus, delta);
         else if (state.view === 'week') state.focus = addDays(state.focus, 7 * delta);
-        else state.dayFocus = addDays(state.dayFocus, delta);
+        else {
+          state.dayFocus = addDays(state.dayFocus, delta);
+          state.hourFocus = null;
+        }
         render();
       };
 
@@ -279,6 +292,7 @@
           card.addEventListener('click', () => {
             state.focus = start;
             state.dayFocus = start;
+            state.hourFocus = null;
             setView('day');
           });
           grid.appendChild(card);
@@ -299,6 +313,14 @@
           { label: 'Day', active: true }
         ]);
         const dayEntries = filterRange(day, nextDay);
+        const selectedHour = state.hourFocus;
+        const selectedHourRange = selectedHour !== null && selectedHour !== undefined
+          ? {
+              start: new Date(day.getFullYear(), day.getMonth(), day.getDate(), selectedHour),
+              end: new Date(day.getFullYear(), day.getMonth(), day.getDate(), selectedHour + 1)
+            }
+          : null;
+        const shownEntries = selectedHourRange ? filterRange(selectedHourRange.start, selectedHourRange.end) : dayEntries;
         const dayGrid = document.createElement('div');
         dayGrid.className = 'grid';
         for (let i = 0; i < 7; i++) {
@@ -321,6 +343,7 @@
           `;
           card.addEventListener('click', () => {
             state.dayFocus = start;
+            state.hourFocus = null;
             render();
           });
           dayGrid.appendChild(card);
@@ -334,18 +357,27 @@
           const bucket = filterRange(hStart, hEnd);
           const card = document.createElement('div');
           card.className = 'card';
+          if (state.hourFocus === h) {
+            const accent = varColorAccent();
+            card.style.borderColor = accent;
+            card.style.boxShadow = `0 0 0 1px ${accent}`;
+          }
           card.innerHTML = `
             <h4>${String(h).padStart(2, '0')}:00</h4>
             <div class="muted">${bucket.length} entr${bucket.length === 1 ? 'y' : 'ies'}</div>
             <div class="preview">${truncate(bucket[bucket.length - 1]?.text)}</div>
           `;
           if (!bucket.length) card.style.opacity = 0.6;
+          card.addEventListener('click', () => {
+            state.hourFocus = h;
+            render();
+          });
           hourGrid.appendChild(card);
         }
 
         const list = document.createElement('div');
         list.className = 'entry-list';
-        dayEntries.forEach(entry => {
+        shownEntries.forEach(entry => {
           const wrapper = document.createElement('div');
           wrapper.className = 'entry';
           const header = document.createElement('div');
@@ -376,7 +408,8 @@
         content.appendChild(hourGrid);
         const entriesTitle = document.createElement('div');
         entriesTitle.className = 'section-title';
-        entriesTitle.textContent = `Entries (${dayEntries.length})`;
+        const hourLabel = selectedHourRange ? ` @ ${String(selectedHour).padStart(2, '0')}:00` : '';
+        entriesTitle.textContent = `Entries (${shownEntries.length})${hourLabel}`;
         content.appendChild(entriesTitle);
         content.appendChild(list);
       };

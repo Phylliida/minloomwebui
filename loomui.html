@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
   <title>Loom UI</title>
   <style>
     :root {
@@ -83,6 +84,10 @@
     .param.stop input { width: 200px; }
     .param.prefix input { width: 180px; }
     .param.postfix input { width: 180px; }
+    @media (max-width: 100%) {
+      body { font-size: 42px; }
+      textarea, input, button, .status, .param { font-size: inherit; }
+    }
   </style>
 </head>
 <body>
@@ -454,7 +459,7 @@
         $('status').textContent = 'generating…';
         state.controller = new AbortController();
         try {
-          const res = await fetch('http://localhost:8055/completion', {
+          const res = await fetch('http://192.168.86.21:8055/completion', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
