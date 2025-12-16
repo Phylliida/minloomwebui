@@ -68,10 +68,17 @@
       cursor: pointer;
       background: #111827;
       color: var(--ink);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       transition: transform 120ms ease, box-shadow 120ms ease;
     }
     button:active { transform: translateY(1px); }
-    button.primary { background: var(--accent); color: #0b1220; }
+    button.primary {
+      background: #111827;
+      color: var(--ink);
+      box-shadow: 0 0 0 1px var(--accent) inset;
+    }
     button:disabled { cursor: not-allowed; opacity: 0.5; box-shadow: none; transform: none; }
     #settingsToggle { font-size: 18px; padding: 10px 14px; }
     #sibPrev, #sibNext, #parentJump, #childJump { font-size: 16px; padding: 10px 14px; }
@@ -89,17 +96,22 @@
       transition: transform 120ms ease, box-shadow 120ms ease;
     }
     .button-link.calendar {
-      font-variant-emoji: text;
       padding: 10px 14px;
       font-size: 18px;
       line-height: 1.4;
       min-height: 46px;
       height: 46px;
     }
-    .calendar-emoji {
-      font-variant-emoji: text;
-      filter: grayscale(1);
-      line-height: 1.2;
+    .icon {
+      width: 20px;
+      height: 20px;
+      display: inline-block;
+      line-height: 0;
+    }
+    .icon svg {
+      width: 100%;
+      height: 100%;
+      display: block;
     }
     .button-link:active { transform: translateY(1px); }
     .status { color: var(--muted); font-size: 12px; }
@@ -162,14 +174,34 @@
 <body>
   <div class="bar">
     <div class="cluster">
-      <button id="generate" class="primary">Generate</button>
+      <button id="generate" class="primary" aria-label="Generate">
+        <span class="icon" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M8 17.175V6.825q0-.425.3-.713t.7-.287q.125 0 .263.037t.262.113l8.15 5.175q.225.15.338.375t.112.475t-.112.475t-.338.375l-8.15 5.175q-.125.075-.262.113T9 18.175q-.4 0-.7-.288t-.3-.712"/></svg>
+        </span>
+      </button>
     </div>
 
     <div class="cluster">
-      <button id="sibPrev" aria-label="Previous sibling">⬅️</button>
-      <button id="parentJump" aria-label="Parent">⬆</button>
-      <button id="childJump" aria-label="First child">⬇</button>
-      <button id="sibNext" aria-label="Next sibling">➡️</button>
+      <button id="sibPrev" aria-label="Previous sibling">
+        <span class="icon" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="m7.85 13l2.85 2.85q.3.3.288.7t-.288.7q-.3.3-.712.313t-.713-.288L4.7 12.7q-.3-.3-.3-.7t.3-.7l4.575-4.575q.3-.3.713-.287t.712.312q.275.3.288.7t-.288.7L7.85 11H19q.425 0 .713.288T20 12t-.288.713T19 13z"/></svg>
+        </span>
+      </button>
+      <button id="parentJump" aria-label="Parent">
+        <span class="icon" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="m11 7.825l-4.9 4.9q-.3.3-.7.288t-.7-.313q-.275-.3-.288-.7t.288-.7l6.6-6.6q.15-.15.325-.212T12 4.425t.375.063t.325.212l6.6 6.6q.275.275.275.688t-.275.712q-.3.3-.712.3t-.713-.3L13 7.825V19q0 .425-.288.713T12 20t-.712-.288T11 19z"/></svg>
+        </span>
+      </button>
+      <button id="childJump" aria-label="First child">
+        <span class="icon" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M11 16.175V5q0-.425.288-.712T12 4t.713.288T13 5v11.175l4.9-4.9q.3-.3.7-.288t.7.313q.275.3.287.7t-.287.7l-6.6 6.6q-.15.15-.325.213t-.375.062t-.375-.062t-.325-.213l-6.6-6.6q-.275-.275-.275-.687T4.7 11.3q.3-.3.713-.3t.712.3z"/></svg>
+        </span>
+      </button>
+      <button id="sibNext" aria-label="Next sibling">
+        <span class="icon" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M16.15 13H5q-.425 0-.712-.288T4 12t.288-.712T5 11h11.15L13.3 8.15q-.3-.3-.288-.7t.288-.7q.3-.3.713-.312t.712.287L19.3 11.3q.15.15.213.325t.062.375t-.062.375t-.213.325l-4.575 4.575q-.3.3-.712.288t-.713-.313q-.275-.3-.288-.7t.288-.7z"/></svg>
+        </span>
+      </button>
       <span id="siblingCount" class="status"></span>
     </div>
     <div class="cluster history">
@@ -186,8 +218,16 @@
       </label>
     </div>
     <div class="cluster">
-      <a id="calendarLink" class="button-link calendar" href="/calendar" target="_blank" rel="noopener noreferrer" aria-label="Calendar" title="Open calendar"><span class="calendar-emoji">📅&#xfe0e;</span></a>
-      <button id="settingsToggle" aria-label="Settings">⚙</button>
+      <a id="calendarLink" class="button-link calendar" href="/calendar" target="_blank" rel="noopener noreferrer" aria-label="Calendar" title="Open calendar">
+        <span class="icon" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M7 1.75a.75.75 0 0 1 .75.75v.763c.662-.013 1.391-.013 2.194-.013h4.112c.803 0 1.532 0 2.194.013V2.5a.75.75 0 0 1 1.5 0v.827q.39.03.739.076c1.172.158 2.121.49 2.87 1.238c.748.749 1.08 1.698 1.238 2.87q.074.562.107 1.23a.75.75 0 0 1 .019.46c.027.801.027 1.712.027 2.743V14a.75.75 0 0 1-1.5 0v-2c0-.854 0-1.597-.013-2.25H2.763c-.013.653-.013 1.396-.013 2.25v2c0 1.907.002 3.262.14 4.29c.135 1.005.389 1.585.812 2.008s1.003.677 2.009.812c1.028.138 2.382.14 4.289.14h4a.75.75 0 0 1 0 1.5H9.944c-1.838 0-3.294 0-4.433-.153c-1.172-.158-2.121-.49-2.87-1.238c-.748-.749-1.08-1.698-1.238-2.87c-.153-1.14-.153-2.595-.153-4.433v-2.112c0-1.031 0-1.942.027-2.744a.75.75 0 0 1 .02-.46q.032-.667.106-1.229c.158-1.172.49-2.121 1.238-2.87c.749-.748 1.698-1.08 2.87-1.238q.35-.046.739-.076V2.5A.75.75 0 0 1 7 1.75m-4.168 6.5h18.336q-.024-.284-.058-.54c-.135-1.005-.389-1.585-.812-2.008s-1.003-.677-2.009-.812c-1.027-.138-2.382-.14-4.289-.14h-4c-1.907 0-3.261.002-4.29.14c-1.005.135-1.585.389-2.008.812S3.025 6.705 2.89 7.71q-.034.255-.058.539M18 15.75a2.25 2.25 0 1 0 0 4.5a2.25 2.25 0 0 0 0-4.5M14.25 18a3.75 3.75 0 1 1 6.879 2.068l1.401 1.402a.75.75 0 1 1-1.06 1.06l-1.402-1.401A3.75 3.75 0 0 1 14.25 18" clip-rule="evenodd"/></svg>
+        </span>
+      </a>
+      <button id="settingsToggle" aria-label="Settings">
+        <span class="icon" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M14.82 1H9.18l-.647 3.237a8.5 8.5 0 0 0-1.52.88l-3.13-1.059l-2.819 4.884l2.481 2.18a8.6 8.6 0 0 0 0 1.756l-2.481 2.18l2.82 4.884l3.129-1.058c.472.342.98.638 1.52.879L9.18 23h5.64l.647-3.237a8.5 8.5 0 0 0 1.52-.88l3.13 1.059l2.82-4.884l-2.482-2.18a8.6 8.6 0 0 0 0-1.756l2.481-2.18l-2.82-4.884l-3.128 1.058a8.5 8.5 0 0 0-1.52-.879zM12 18a6 6 0 1 0 0-12a6 6 0 0 0 0 12Z" clip-rule="evenodd"/></svg>
+        </span>
+      </button>
     </div>
     <span id="status" class="status">idle</span>
   </div>
@@ -257,6 +297,18 @@
       const settingsClose = $('settingsClose');
       const settingsPopout = $('settingsPopout');
       const serverUrlInput = $('serverUrl');
+      const generateIconMarkup = '<span class="icon" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M8 17.175V6.825q0-.425.3-.713t.7-.287q.125 0 .263.037t.262.113l8.15 5.175q.225.15.338.375t.112.475t-.112.475t-.338.375l-8.15 5.175q-.125.075-.262.113T9 18.175q-.4 0-.7-.288t-.3-.712"/></svg></span>';
+      const pauseIconMarkup = '<span class="icon" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M6 16V8q0-.825.588-1.412T8 6h8q.825 0 1.413.588T18 8v8q0 .825-.587 1.413T16 18H8q-.825 0-1.412-.587T6 16"/></svg></span>';
+      const setGenerateIdleLabel = () => {
+        if (!generateButton) return;
+        generateButton.innerHTML = generateIconMarkup;
+        generateButton.setAttribute('aria-label', 'Generate');
+      };
+      const setGenerateRunningLabel = () => {
+        if (!generateButton) return;
+        generateButton.innerHTML = pauseIconMarkup;
+        generateButton.setAttribute('aria-label', 'Stop');
+      };
       const preview = (text, len = 48) => {
         if (!text) return '(empty)';
         const cleaned = String(text).replace(/\s+/g, ' ').trim();
@@ -638,7 +690,8 @@
       };
       const setRunning = on => {
         if (generateButton) {
-          generateButton.textContent = on ? 'Stop' : 'Generate';
+          if (on) setGenerateRunningLabel();
+          else setGenerateIdleLabel();
           generateButton.classList.toggle('primary', !on);
         }
         $('pad').readOnly = on;
