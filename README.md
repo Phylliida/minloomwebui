@@ -17,15 +17,15 @@ If you go to [http://localhost:5000/](http://localhost:5000/) you should see the
 
 ![loom preview](https://raw.githubusercontent.com/Phylliida/minloomwebui/refs/heads/main/loom.png)
 
-It's deliberately very minimal. There's an undo but no support for viewing a tree, just you and the text box.
+It's deliberately very minimal. You can traverse the tree via the arrows (up to parent, left and right to siblings, down to last visited child). ctrl-left, ctrl-right, etc. can press these buttons. Ctrl-enter to pause and begin generation.
 
-However your entire history is stored. You can access it by moving prev and next (or typing in an index), or by copying the current url (which will have a persistent link via a hash).
+Your entire history is stored. You can access it by moving prev and next (or typing in an index), or by copying the current url (which will have a persistent link via a hash).
 
 Save those hashes if you want to "bookmark" something.
 
 You can also navigate around using the browser back and forward buttons.
 
-There's a calendar view at [http://localhost:5000/calendar](http://localhost:5000/calendar) that allows you to view your entire chronological history.
+There's a calendar view that allows you to view your entire chronological history.
 
 ## Source
 

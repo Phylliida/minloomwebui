@@ -70,6 +70,35 @@
     button:active { transform: translateY(1px); }
     button.primary { background: var(--accent); color: #0b1220; }
     button:disabled { cursor: not-allowed; opacity: 0.5; box-shadow: none; transform: none; }
+    #settingsToggle { font-size: 18px; padding: 10px 14px; }
+    #sibPrev, #sibNext, #parentJump, #childJump { font-size: 16px; padding: 10px 14px; }
+    .button-link {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font: inherit;
+      background: #111827;
+      color: var(--ink);
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: transform 120ms ease, box-shadow 120ms ease;
+    }
+    .button-link.calendar {
+      font-variant-emoji: text;
+      padding: 10px 14px;
+      font-size: 18px;
+      line-height: 1.4;
+      min-height: 46px;
+      height: 46px;
+    }
+    .calendar-emoji {
+      font-variant-emoji: text;
+      filter: grayscale(1);
+      line-height: 1.2;
+    }
+    .button-link:active { transform: translateY(1px); }
     .status { color: var(--muted); font-size: 12px; }
     .param { color: var(--muted); display: flex; align-items: center; gap: 4px; font-size: 12px; }
     .param input {
@@ -93,6 +122,7 @@
     .param.stop input { width: 200px; }
     .param.prefix input { width: 180px; }
     .param.postfix input { width: 180px; }
+    .param.url input { width: 260px; }
     .settings-popout {
       position: absolute;
       top: 52px;
@@ -153,6 +183,7 @@
       </label>
     </div>
     <div class="cluster">
+      <a id="calendarLink" class="button-link calendar" href="/calendar" target="_blank" rel="noopener noreferrer" aria-label="Calendar" title="Open calendar"><span class="calendar-emoji">📅&#xfe0e;</span></a>
       <button id="settingsToggle" aria-label="Settings">⚙</button>
     </div>
     <span id="status" class="status">idle</span>
@@ -163,6 +194,7 @@
       <button id="settingsClose" aria-label="Close settings">X</button>
     </div>
     <div class="settings-row params">
+      <label class="param url">llama url <input id="serverUrl" type="url" placeholder="http://localhost:8055/completion"></label>
       <label class="param">T <input id="temp" type="number" step="0.1" min="0" value="1"></label>
       <label class="param">top_k <input id="topk" type="number" step="1" min="0" value="0"></label>
       <label class="param">top_p <input id="topp" type="number" step="0.01" min="0" max="1" value="1"></label>
@@ -179,10 +211,37 @@
   <script>
     (() => {
       const $ = id => document.getElementById(id);
-      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false };
+      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false, serverUrl: '' };
+      const DEFAULT_COMPLETION_URL = 'http://localhost:8055/completion';
+      const SERVER_URL_STORAGE_KEY = 'loomui:serverUrl';
       const newId = () => crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
       const getHashId = () => (location.hash || '').replace(/^#/, '') || null;
       const setHash = id => { if (id) location.hash = id; };
+      const readStoredServerUrl = () => {
+        try {
+          const saved = localStorage.getItem(SERVER_URL_STORAGE_KEY);
+          if (typeof saved === 'string' && saved.trim()) return saved.trim();
+        } catch (err) {
+          console.warn('reading server url failed', err);
+        }
+        return DEFAULT_COMPLETION_URL;
+      };
+      const setServerUrl = raw => {
+        const normalized = (raw || '').trim() || DEFAULT_COMPLETION_URL;
+        state.serverUrl = normalized;
+        const input = $('serverUrl');
+        if (input && input.value !== normalized) input.value = normalized;
+        try {
+          localStorage.setItem(SERVER_URL_STORAGE_KEY, normalized);
+        } catch (err) {
+          console.warn('saving server url failed', err);
+        }
+        return normalized;
+      };
+      const getServerUrl = () => {
+        const normalized = (state.serverUrl || '').trim();
+        return normalized || DEFAULT_COMPLETION_URL;
+      };
       const histInput = $('histIndex');
       const undoButton = $('undoGen');
       const generateButton = $('generate');
@@ -194,6 +253,7 @@
       const settingsToggle = $('settingsToggle');
       const settingsClose = $('settingsClose');
       const settingsPopout = $('settingsPopout');
+      const serverUrlInput = $('serverUrl');
       const preview = (text, len = 48) => {
         if (!text) return '(empty)';
         const cleaned = String(text).replace(/\s+/g, ' ').trim();
@@ -345,8 +405,14 @@
         updateParentButton();
         updateChildButton();
       };
+      var modified = false;
+      const flagChange = () => {
+        modified = true;
+      };
       const logChange = text => {
+        if (!modified) return;
         if (state.ignoreLog) return;
+        modified = false;
         const content = text ?? $('pad')?.value;
         if (content === undefined) return;
         const id = newId();
@@ -386,6 +452,7 @@
           min_p: num('minp', 0, parseFloat),
           repetition_penalty: num('reppen', 1, parseFloat),
           n_predict: num('maxtok', 512, parseInt),
+          server_url: getServerUrl(),
           stop: stopTokens.length ? stopTokens : undefined,
           stop_raw: stopRaw || undefined,
           prefix: prefix || undefined,
@@ -407,6 +474,10 @@
         set('minp', params.min_p);
         set('reppen', params.repetition_penalty);
         set('maxtok', params.n_predict ?? params.max_tokens ?? params.max_new_tokens);
+        const serverUrlVal = params.server_url ?? params.base_url ?? params.url;
+        if (serverUrlVal !== undefined && serverUrlVal !== null && serverUrlVal !== '') {
+          setServerUrl(serverUrlVal);
+        }
         const stop = params.stop || params.stop_tokens || [];
         const stopField = $('stopTokens');
         if (stopField) {
@@ -605,6 +676,7 @@
       const mergeContent = text => {
         if (text.startsWith(state.gen)) state.gen = text;
         else state.gen += text;
+        modified = true;
         const pad = $('pad');
         const stickToBottom = isNearBottom();
         const wasFocused = document.activeElement === pad;
@@ -656,10 +728,13 @@
       };
       const generate = async () => {
         const beforeIdx = currentIndex();
+        logChange();
         stop();
+        if (serverUrlInput) setServerUrl(serverUrlInput.value);
         state.lastPreGenIdx = beforeIdx >= 0 ? beforeIdx : null;
         setUndoEnabled();
         state.base = $('pad').value;
+        modified = true;
         const prefix = getPrefix();
         if (prefix) {
           state.base += prefix;
@@ -684,10 +759,13 @@
         $('status').textContent = 'generating…';
         state.controller = new AbortController();
         try {
-          const res = await fetch('http://192.168.86.21:8055/completion', {
+          const endpoint = getServerUrl();
+          const params = getParams();
+          const { server_url, ...llamaParams } = params;
+          const res = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ prompt, stream: true, ...getParams() }),
+            body: JSON.stringify({ prompt, stream: true, ...llamaParams }),
             signal: state.controller.signal
           });
           if (!res.ok) throw new Error(`Server ${res.status}`);
@@ -722,6 +800,12 @@
         if (settingsPopout.contains(e.target) || settingsToggle?.contains(e.target)) return;
         setSettingsVisible(false);
       });
+      setServerUrl(readStoredServerUrl());
+      const syncServerUrl = () => { if (serverUrlInput) setServerUrl(serverUrlInput.value); };
+      if (serverUrlInput) {
+        serverUrlInput.addEventListener('change', syncServerUrl);
+        serverUrlInput.addEventListener('blur', syncServerUrl);
+      }
       document.addEventListener('keydown', e => {
         if (e.key === 'Escape' && settingsPopout && !settingsPopout.hidden) {
           setSettingsVisible(false);
@@ -753,10 +837,10 @@
           undoGeneration();
         }
       });
-      $('pad').addEventListener('input', () => { fitPad(); logChange($('pad').value); });
+      $('pad').addEventListener('input', () => { fitPad(); flagChange(); });
       ['temp', 'topk', 'topp', 'minp', 'reppen', 'maxtok', 'stopTokens', 'prefix', 'postfix'].forEach(id => {
         const el = $(id);
-        if (el) el.addEventListener('input', () => logChange($('pad').value));
+        if (el) el.addEventListener('input', () => flagChange());
       });
       const undoGeneration = () => {
         if (state.lastPreGenIdx == null) return;
