@@ -791,7 +791,8 @@
           state.runLoggedEnd = false;
         }
       };
-      $('generate').addEventListener('click', () => { if (state.controller) stop(); else generate(); });
+      $('generate').addEventListener('mousedown', (e) => {if (!state.controller) { e.preventDefault(); generate(); } });
+      $('generate').addEventListener('touchdown', (e) => {if (!state.controller) { e.preventDefault(); generate(); } });
       $('prev').addEventListener('click', () => showIndex(currentIndex() - 1));
       $('next').addEventListener('click', () => showIndex(currentIndex() + 1));
       if (parentJump) parentJump.addEventListener('click', () => jumpParent());
@@ -882,6 +883,21 @@
           childSelect.value = '';
         });
       }
+      const enableTouchStop = () => {
+        const onTouchStop = e => {
+          if (!state.controller) return true;
+          // Only react to genuine touch/pointer taps.
+          const isTouchEvent = e.type === 'touchstart' || e.type == "pointerdown";
+          if (isTouchEvent) {
+            stop();
+          }
+          e.preventDefault();
+          return false;
+        };
+        document.addEventListener('touchstart', onTouchStop);
+        document.addEventListener('pointerdown', onTouchStop);
+      };
+      enableTouchStop();
       const loadInitial = async () => {
         try {
           const hashed = getHashId();
