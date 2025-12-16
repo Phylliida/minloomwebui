@@ -259,11 +259,9 @@ def history():
         )
         return jsonify({"ok": True, "entry": entry})
     entry_id = request.args.get("id")
-    print(entry_id)
     if entry_id:
         entry = read_entry_by_id(entry_id)
         if entry:
-            print(entry)
             return jsonify({"entry": entry, "total": history_count()})
         return jsonify({"error": "not found"}), 404
     if "index" in request.args:

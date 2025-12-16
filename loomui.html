@@ -93,6 +93,33 @@
     .param.stop input { width: 200px; }
     .param.prefix input { width: 180px; }
     .param.postfix input { width: 180px; }
+    .settings-popout {
+      position: absolute;
+      top: 52px;
+      right: 12px;
+      background: #0f172a;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
+      z-index: 20;
+      min-width: 320px;
+      max-width: min(520px, 90vw);
+    }
+    .settings-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .settings-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
     @media (max-width: 100%) {
       body { font-size: 42px; }
       textarea, input, button, .status, .param { font-size: inherit; }
@@ -112,17 +139,6 @@
       <button id="sibNext" aria-label="Next sibling">⟶</button>
       <span id="siblingCount" class="status"></span>
     </div>
-    <div class="cluster params">
-      <label class="param">T <input id="temp" type="number" step="0.1" min="0" value="1"></label>
-      <label class="param">top_k <input id="topk" type="number" step="1" min="0" value="0"></label>
-      <label class="param">top_p <input id="topp" type="number" step="0.01" min="0" max="1" value="1"></label>
-      <label class="param">min_p <input id="minp" type="number" step="0.01" min="0" max="1" value="0"></label>
-      <label class="param">rep <input id="reppen" type="number" step="0.01" min="0" value="1"></label>
-      <label class="param">max_tok <input id="maxtok" type="number" step="1" min="1" value="512"></label>
-      <label class="param stop">stop <input id="stopTokens" type="text" placeholder="comma-separated"></label>
-      <label class="param prefix">prefix <input id="prefix" type="text" placeholder="prepend on generate"></label>
-      <label class="param postfix">postfix <input id="postfix" type="text" placeholder="append on stop"></label>
-    </div>
     <div class="cluster history">
       <button id="prev" style="display:none;" disabled aria-label="Previous entry">Prev</button>
       <input id="histIndex" style="display:none;" type="number" min="0" step="1" aria-label="History index">
@@ -136,7 +152,27 @@
         </select>
       </label>
     </div>
+    <div class="cluster">
+      <button id="settingsToggle" aria-label="Settings">⚙</button>
+    </div>
     <span id="status" class="status">idle</span>
+  </div>
+  <div id="settingsPopout" class="settings-popout" hidden>
+    <div class="settings-header">
+      <span>Settings</span>
+      <button id="settingsClose" aria-label="Close settings">X</button>
+    </div>
+    <div class="settings-row params">
+      <label class="param">T <input id="temp" type="number" step="0.1" min="0" value="1"></label>
+      <label class="param">top_k <input id="topk" type="number" step="1" min="0" value="0"></label>
+      <label class="param">top_p <input id="topp" type="number" step="0.01" min="0" max="1" value="1"></label>
+      <label class="param">min_p <input id="minp" type="number" step="0.01" min="0" max="1" value="0"></label>
+      <label class="param">rep <input id="reppen" type="number" step="0.01" min="0" value="1"></label>
+      <label class="param">max_tok <input id="maxtok" type="number" step="1" min="1" value="512"></label>
+      <label class="param stop">stop <input id="stopTokens" type="text" placeholder="comma-separated"></label>
+      <label class="param prefix">prefix <input id="prefix" type="text" placeholder="prepend on generate"></label>
+      <label class="param postfix">postfix <input id="postfix" type="text" placeholder="append on stop"></label>
+    </div>
   </div>
   <textarea id="pad" spellcheck="false" placeholder="Type or paste context here, then press Generate."></textarea>
 
@@ -155,6 +191,9 @@
       const childJump = $('childJump');
       const sibPrev = $('sibPrev');
       const sibNext = $('sibNext');
+      const settingsToggle = $('settingsToggle');
+      const settingsClose = $('settingsClose');
+      const settingsPopout = $('settingsPopout');
       const preview = (text, len = 48) => {
         if (!text) return '(empty)';
         const cleaned = String(text).replace(/\s+/g, ' ').trim();
@@ -264,6 +303,10 @@
           parent.children = upsertChild(parent.children, { id: childId, ms });
           state.cache.set(parentId, parent);
         }
+      };
+      const setSettingsVisible = on => {
+        if (!settingsPopout) return;
+        settingsPopout.hidden = !on;
       };
       const ensureParentData = entry => {
         if (!entry?.parent) return;
@@ -669,11 +712,38 @@
       if (childJump) childJump.addEventListener('click', () => jumpFirstChild());
       if (sibPrev) sibPrev.addEventListener('click', () => jumpSibling(-1));
       if (sibNext) sibNext.addEventListener('click', () => jumpSibling(1));
+      if (settingsToggle) settingsToggle.addEventListener('click', () => {
+        if (!settingsPopout) return;
+        setSettingsVisible(settingsPopout.hidden);
+      });
+      if (settingsClose) settingsClose.addEventListener('click', () => setSettingsVisible(false));
+      document.addEventListener('click', e => {
+        if (!settingsPopout || settingsPopout.hidden) return;
+        if (settingsPopout.contains(e.target) || settingsToggle?.contains(e.target)) return;
+        setSettingsVisible(false);
+      });
+      document.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && settingsPopout && !settingsPopout.hidden) {
+          setSettingsVisible(false);
+        }
+      });
       document.addEventListener('keydown', e => {
         const mod = e.metaKey || e.ctrlKey;
         if (mod && e.key === 'Enter') {
           if (state.controller) stop();
           else generate();
+        } else if (mod && e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (parentJump && !parentJump.disabled) parentJump.click();
+        } else if (mod && e.key === 'ArrowDown') {
+          e.preventDefault();
+          if (childJump && !childJump.disabled) childJump.click();
+        } else if (mod && e.key === 'ArrowLeft') {
+          e.preventDefault();
+          if (sibPrev && !sibPrev.disabled) sibPrev.click();
+        } else if (mod && e.key === 'ArrowRight') {
+          e.preventDefault();
+          if (sibNext && !sibNext.disabled) sibNext.click();
         } else if (mod && (e.key === 'z' || e.key === 'Z')) {
           const pad = $('pad');
           const focusedPad = document.activeElement === pad;
