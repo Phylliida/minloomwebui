@@ -1,8 +1,6 @@
 # minloomwebui
 Minimal webui loom for base models
 
-All history is saved in one big .jsonl file, just copy your browser url for current state to save it.
-
 Use something like this alongside it:
 
 ```sh

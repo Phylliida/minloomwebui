@@ -81,6 +81,15 @@
       padding: 6px 8px;
       font: inherit;
     }
+    .param select {
+      min-width: 160px;
+      background: #0f172a;
+      border: 1px solid var(--border);
+      color: var(--ink);
+      border-radius: 4px;
+      padding: 6px 8px;
+      font: inherit;
+    }
     .param.stop input { width: 200px; }
     .param.prefix input { width: 180px; }
     .param.postfix input { width: 180px; }
@@ -107,52 +116,69 @@
       <label class="param postfix">postfix <input id="postfix" type="text" placeholder="append on stop"></label>
     </div>
     <div class="cluster history">
-      <button id="prev" disabled aria-label="Previous entry">Prev</button>
-      <input id="histIndex" type="number" min="0" step="1" aria-label="History index">
-      <span id="historyStatus" class="status">0/0</span>
-      <button id="next" disabled aria-label="Next entry">Next</button>
+      <button id="prev" style="display:none;" disabled aria-label="Previous entry">Prev</button>
+      <input id="histIndex" style="display:none;" type="number" min="0" step="1" aria-label="History index">
+      <span id="historyStatus" style="display:none;" class="status">0/0</span>
+      <button id="next" style="display:none;" disabled aria-label="Next entry">Next</button>
+    </div>
+    <div class="cluster">
+      <label class="param">
+        <select id="childSelect" aria-label="Children of current entry" style="display:none;">
+          <option value="">no children</option>
+        </select>
+      </label>
+    </div>
+    <div class="cluster">
+      <button id="sibPrev" aria-label="Previous sibling">⟵</button>
+      <button id="sibNext" aria-label="Next sibling">⟶</button>
     </div>
     <span id="status" class="status">idle</span>
   </div>
   <textarea id="pad" spellcheck="false" placeholder="Type or paste context here, then press Generate."></textarea>
 
   <script>
+    function unique(list) {
+    return [...new Set(list)];
+  }
     (() => {
       const $ = id => document.getElementById(id);
-      const state = { controller: null, base: '', gen: '', history: [], histPos: null, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false };
+      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false };
       const newId = () => crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
       const getHashId = () => (location.hash || '').replace(/^#/, '') || null;
       const setHash = id => { if (id) location.hash = id; };
       const histInput = $('histIndex');
       const undoButton = $('undoGen');
       const generateButton = $('generate');
-
-      const withLogPaused = fn => {
-        state.ignoreLog = true;
-        try { fn(); } finally { state.ignoreLog = false; }
+      const childSelect = $('childSelect');
+      const sibPrev = $('sibPrev');
+      const sibNext = $('sibNext');
+      const preview = (text, len = 48) => {
+        if (!text) return '(empty)';
+        const cleaned = String(text).replace(/\s+/g, ' ').trim();
+        return cleaned.length > len ? `${cleaned.slice(0, len)}…` : cleaned;
       };
-
-      const currentIndex = () => state.histPos ?? state.history.length - 1;
-      const canPrev = () => state.history.length > 0 && currentIndex() > 0;
-      const canNext = () => state.history.length > 0 && currentIndex() < state.history.length - 1;
+      const withLogPaused = fn => { state.ignoreLog = true; try { fn(); } finally { state.ignoreLog = false; } };
+      const currentIndex = () => Number.isFinite(state.entry?.index) ? state.entry.index : -1;
+      const currentEntryId = () => state.entry?.id ?? null;
+      const selectedParentId = () => currentEntryId() || getHashId() || null;
+      const canPrev = () => currentIndex() > 0;
+      const canNext = () => {
+        const idx = currentIndex();
+        if (idx < 0) return false;
+        if (state.total) return idx < state.total - 1;
+        return true;
+      };
       const setUndoEnabled = () => { if (undoButton) undoButton.disabled = state.lastPreGenIdx == null || !!state.controller; };
-
       const isNearBottom = (threshold = 48) => {
         const doc = document.documentElement;
         return doc.scrollHeight - (window.scrollY + window.innerHeight) <= threshold;
       };
-
       const getStopRaw = () => $('stopTokens')?.value ?? '';
-      const parseStopTokens = val => (val || '')
-        .split(',')
-        .map(s => s.trim())
-        .filter(Boolean)
-        .map(s => s.replace(/\\n/g, '\n'));
+      const parseStopTokens = val => (val || '').split(',').map(s => s.trim()).filter(Boolean).map(s => s.replace(/\\n/g, '\n'));
       const getPrefixRaw = () => $('prefix')?.value ?? '';
       const getPrefix = () => getPrefixRaw().replace(/\\n/g, '\n');
       const getPostfixRaw = () => $('postfix')?.value ?? '';
       const getPostfix = () => getPostfixRaw().replace(/\\n/g, '\n');
-
       const fitPad = stickToBottomInput => {
         const pad = $('pad');
         if (!pad) return;
@@ -165,42 +191,78 @@
         if (shouldStick) window.scrollTo({ top: document.documentElement.scrollHeight });
         else window.scrollTo({ top: prevScroll });
       };
-
+      const entryById = id => (id ? state.cache.get(id) : null);
+      const cleanChildren = kids => {
+        if (!Array.isArray(kids)) return [];
+        const seen = new Set();
+        const out = [];
+        kids.forEach(k => {
+          if (typeof k !== 'string' || seen.has(k)) return;
+          seen.add(k);
+          out.push(k);
+        });
+        return out.sort();
+      };
+      const sortChildIds = ids => {
+        return [...ids].sort((a, b) => {
+          const ea = entryById(a);
+          const eb = entryById(b);
+          const ai = ea?.index;
+          const bi = eb?.index;
+          if (Number.isFinite(ai) && Number.isFinite(bi)) return ai - bi;
+          if (Number.isFinite(ai)) return -1;
+          if (Number.isFinite(bi)) return 1;
+          return String(a).localeCompare(String(b));
+        });
+      };
+      const storeEntry = entry => {
+        const incomingId = entry.id || newId();
+        const existing = state.cache.get(incomingId) || {};
+        const normalized = {
+          ...existing,
+          ...entry,
+          id: incomingId,
+          params: entry.params || existing.params || {},
+          children: cleanChildren(entry.children ?? existing.children)
+        };
+        state.cache.set(incomingId, normalized);
+        if (Number.isFinite(normalized.index)) state.total = Math.max(state.total, normalized.index + 1);
+        if (normalized.parent) {
+          const parent = state.cache.get(normalized.parent);
+          if (parent) {
+            parent.children = sortChildIds([...(parent.children || []), normalized.id]);
+            state.cache.set(parent.id, parent);
+          }
+        }
+        return normalized;
+      };
+      const setCurrent = entry => {
+        if (!entry) return;
+        const normalized = storeEntry(entry);
+        state.entry = normalized;
+        state.lastPreGenIdx = normalized.pre_gen_index ?? state.lastPreGenIdx;
+        withLogPaused(() => {
+          $('pad').value = normalized.text ?? '';
+          setParams(normalized.params);
+          fitPad();
+        });
+        setHash(normalized.id);
+        updateHistoryStatus();
+      };
       const updateHistoryStatus = () => {
-        const total = state.history.length;
-        const pos = state.histPos == null ? total : state.histPos + 1;
-        $('historyStatus').textContent = `${pos}/${total}`;
+        const idx = currentIndex();
+        const total = state.total || (idx >= 0 ? idx + 1 : 0);
+        $('historyStatus').textContent = `${idx >= 0 ? idx + 1 : 0}/${total}`;
         $('prev').disabled = !!state.controller || !canPrev();
         $('next').disabled = !!state.controller || !canNext();
         setUndoEnabled();
         if (histInput) {
-          histInput.value = state.histPos == null ? '' : (state.history[state.histPos]?.index ?? state.histPos);
+          histInput.value = idx >= 0 ? idx : '';
           histInput.placeholder = total ? 'index' : '';
         }
+        updateChildSelector();
+        updateSiblingButtons();
       };
-
-      const addEntry = entry => {
-        const normalized = {
-          index: typeof entry.index === 'number' ? entry.index : state.history.length,
-          ts: entry.ts,
-          ms: entry.ms,
-          params: entry.params || {},
-          pre_gen_index: entry.pre_gen_index,
-          text: entry.text ?? $('pad').value,
-          id: entry.id || newId()
-        };
-        const existingIdx = normalized.id ? state.history.findIndex(e => e?.id === normalized.id) : -1;
-        const nextHistory = existingIdx === -1
-          ? [...state.history, normalized]
-          : state.history.map((item, i) => (i === existingIdx ? normalized : item));
-        nextHistory.sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-        state.history = nextHistory;
-        const foundIdx = state.history.findIndex(e => e.id === normalized.id);
-        state.histPos = foundIdx === -1 ? state.history.length - 1 : foundIdx;
-        setHash(normalized.id);
-        updateHistoryStatus();
-      };
-
       const logChange = text => {
         if (state.ignoreLog) return;
         const content = text ?? $('pad')?.value;
@@ -210,13 +272,20 @@
         fetch('/history', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: content, ts: ts / 1000, ms: ts, id, params: getParams(), pre_gen_index: state.lastPreGenIdx })
+          body: JSON.stringify({
+            text: content,
+            ts: ts / 1000,
+            ms: ts,
+            id,
+            params: getParams(),
+            pre_gen_index: state.lastPreGenIdx,
+            parent: selectedParentId()
+          })
         })
           .then(res => res.ok ? res.json() : null)
-          .then(data => { if (data?.entry) addEntry(data.entry); })
+          .then(data => { if (data?.entry) setCurrent(data.entry); })
           .catch(err => console.error('history post failed', err));
       };
-
       const getParams = () => {
         const num = (id, fallback, parser = parseFloat) => {
           const n = parser($(id).value);
@@ -243,7 +312,6 @@
           postfix_raw: postfixRaw || undefined
         };
       };
-
       const setParams = params => {
         if (!params) return;
         const set = (id, val) => {
@@ -278,53 +346,99 @@
           postfixField.value = typeof raw === 'string' ? raw.replace(/\n/g, '\\n') : raw;
         }
       };
-
-      const showEntry = idx => {
-        if (idx < 0 || idx >= state.history.length) return;
-        state.histPos = idx;
-        state.lastPreGenIdx = state.history[idx]?.pre_gen_index ?? state.lastPreGenIdx;
-        withLogPaused(() => {
-          $('pad').value = state.history[idx].text ?? '';
-          setParams(state.history[idx].params);
-          fitPad();
-        });
-        setHash(state.history[idx].id);
-        updateHistoryStatus();
+      const childOptionLabel = id => {
+        const entry = entryById(id);
+        if (!entry) return id;
+        const idxLabel = Number.isFinite(entry.index) ? `#${entry.index} ` : '';
+        return `${idxLabel}${preview(entry.text, 40)}`;
       };
-
-      const showById = id => {
-        if (!id) return false;
-        const idx = state.history.findIndex(e => e?.id === id);
-        if (idx === -1) return false;
-        showEntry(idx);
-        return true;
-      };
-
-      const findHistoryPosForIndex = num => {
-        if (!Number.isFinite(num)) return -1;
-        const byIndex = state.history.findIndex(e => e?.index === num);
-        if (byIndex !== -1) return byIndex;
-        if (num >= 1 && num <= state.history.length) return num - 1; // allow 1-based positions
-        if (num >= 0 && num < state.history.length) return num; // allow 0-based positions
-        return -1;
-      };
-
-      const fetchEntryById = async id => {
-        if (!id) return false;
-        try {
-          const res = await fetch(`/history?id=${encodeURIComponent(id)}`);
-          if (!res.ok) return false;
-          const data = await res.json();
-          if (!data?.entry) return false;
-          addEntry({ ...data.entry, params: data.entry.params || {} });
-          showById(id);
-          return true;
-        } catch (err) {
-          console.warn('history lookup failed', err);
-          return false;
+      function updateSiblingButtons() {
+        if (!sibPrev || !sibNext) return;
+        const entry = state.entry;
+        const parent = entry?.parent ? entryById(entry.parent) : null;
+        const kids = parent?.children ? sortChildIds(parent.children) : [];
+        const pos = kids.indexOf(entry?.id);
+        sibPrev.disabled = pos <= 0;
+        sibNext.disabled = pos === -1 || pos >= kids.length - 1;
+      }
+      async function jumpSibling(delta) {
+        const entry = state.entry;
+        if (!entry?.parent) return;
+        let parent = entryById(entry.parent);
+        console.log(parent);
+        if (!parent) parent = await fetchEntry({ id: entry.parent });
+        if (!parent?.children) return;
+        const kids = sortChildIds(unique(parent.children));
+        console.log(kids);
+        const pos = kids.indexOf(entry.id);
+        console.log(pos);
+        const target = kids[pos + delta];
+        console.log(target);
+        console.log(delta);
+        if (target) await showId(target);
+      }
+      function updateChildSelector() {
+        if (!childSelect) return;
+        childSelect.innerHTML = '';
+        const entry = state.entry;
+        if (!entry) {
+          const opt = document.createElement('option');
+          opt.value = '';
+          opt.textContent = 'no entry';
+          childSelect.appendChild(opt);
+          childSelect.disabled = true;
+          return;
         }
+        const children = Array.isArray(entry.children) ? sortChildIds(entry.children) : [];
+        if (!children.length) {
+          const opt = document.createElement('option');
+          opt.value = '';
+          opt.textContent = 'no children';
+          childSelect.appendChild(opt);
+          childSelect.disabled = true;
+        } else {
+          const opt = document.createElement('option');
+          opt.value = '';
+          opt.textContent = 'choose child…';
+          childSelect.appendChild(opt);
+          children.forEach(childId => {
+            const o = document.createElement('option');
+            o.value = String(childId);
+            o.textContent = childOptionLabel(childId);
+            childSelect.appendChild(o);
+          });
+          childSelect.disabled = false;
+        }
+        childSelect.value = '';
+      }
+      const fetchEntry = async query => {
+        const qs = new URLSearchParams();
+        if (query.id) qs.set('id', query.id);
+        if (Number.isFinite(query.index)) qs.set('index', query.index);
+        if (query.latest) qs.set('latest', '1');
+        const res = await fetch(`/history?${qs.toString()}`);
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (Number.isFinite(data.total)) state.total = data.total;
+        if (!data.entry) return null;
+        return storeEntry({ ...data.entry, params: data.entry.params || {} });
       };
-
+      const showIndex = async idx => {
+        if (!Number.isFinite(idx) || idx < 0) return;
+        const entry = await fetchEntry({ index: idx });
+        if (entry) setCurrent(entry);
+      };
+      const showId = async id => {
+        if (!id) return;
+        const cached = entryById(id);
+        if (cached?.text) return setCurrent(cached);
+        const entry = await fetchEntry({ id });
+        if (entry) setCurrent(entry);
+      };
+      const fetchLatest = async () => {
+        const entry = await fetchEntry({ latest: true });
+        if (entry) setCurrent(entry);
+      };
       const setRunning = on => {
         if (generateButton) {
           generateButton.textContent = on ? 'Stop' : 'Generate';
@@ -335,7 +449,6 @@
         updateHistoryStatus();
         setUndoEnabled();
       };
-
       const applyPostfix = () => {
         if (state.postfixApplied) return;
         const postfix = getPostfix();
@@ -357,14 +470,12 @@
         state.postfixApplied = true;
         fitPad(stickToBottom);
       };
-
       const logGenerationEnd = () => {
         if (!state.runId || state.runLoggedEnd) return;
         applyPostfix();
         state.runLoggedEnd = true;
         logChange();
       };
-
       const stop = () => {
         const wasGenerating = !!state.controller;
         if (state.controller) state.controller.abort();
@@ -373,7 +484,6 @@
         setRunning(false);
         $('status').textContent = 'stopped';
       };
-
       const mergeContent = text => {
         if (text.startsWith(state.gen)) state.gen = text;
         else state.gen += text;
@@ -389,7 +499,6 @@
         }
         fitPad(stickToBottom);
       };
-
       const handleEvent = chunk => {
         if (chunk === '[DONE]') return stop();
         try {
@@ -401,7 +510,6 @@
           console.error('bad chunk', chunk, err);
         }
       };
-
       const pumpStream = async res => {
         const reader = res.body?.getReader();
         if (!reader) throw new Error('No stream from server');
@@ -428,11 +536,10 @@
           });
         }
       };
-
       const generate = async () => {
         const beforeIdx = currentIndex();
         stop();
-        state.lastPreGenIdx = beforeIdx >= 0 ? (state.history[beforeIdx]?.index ?? beforeIdx) : null;
+        state.lastPreGenIdx = beforeIdx >= 0 ? beforeIdx : null;
         setUndoEnabled();
         state.base = $('pad').value;
         const prefix = getPrefix();
@@ -454,7 +561,7 @@
         state.runId = newId();
         state.runLoggedEnd = false;
         state.postfixApplied = false;
-        logChange(state.base);
+        //logChange(state.base);
         setRunning(true);
         $('status').textContent = 'generating…';
         state.controller = new AbortController();
@@ -462,11 +569,7 @@
           const res = await fetch('http://192.168.86.21:8055/completion', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              prompt,
-              stream: true,
-              ...getParams()
-            }),
+            body: JSON.stringify({ prompt, stream: true, ...getParams() }),
             signal: state.controller.signal
           });
           if (!res.ok) throw new Error(`Server ${res.status}`);
@@ -484,13 +587,11 @@
           state.runLoggedEnd = false;
         }
       };
-
-      $('generate').addEventListener('click', () => {
-        if (state.controller) stop();
-        else generate();
-      });
-      $('prev').addEventListener('click', () => showEntry(currentIndex() - 1));
-      $('next').addEventListener('click', () => showEntry(currentIndex() + 1));
+      $('generate').addEventListener('click', () => { if (state.controller) stop(); else generate(); });
+      $('prev').addEventListener('click', () => showIndex(currentIndex() - 1));
+      $('next').addEventListener('click', () => showIndex(currentIndex() + 1));
+      if (sibPrev) sibPrev.addEventListener('click', () => jumpSibling(-1));
+      if (sibNext) sibNext.addEventListener('click', () => jumpSibling(1));
       document.addEventListener('keydown', e => {
         const mod = e.metaKey || e.ctrlKey;
         if (mod && e.key === 'Enter') {
@@ -500,7 +601,7 @@
           const pad = $('pad');
           const focusedPad = document.activeElement === pad;
           const padEditable = pad && !pad.readOnly;
-          if (focusedPad && padEditable) return; // let native undo work while editing
+          if (focusedPad && padEditable) return;
           e.preventDefault();
           undoGeneration();
         }
@@ -513,26 +614,17 @@
       const undoGeneration = () => {
         if (state.lastPreGenIdx == null) return;
         stop();
-        const pos = findHistoryPosForIndex(state.lastPreGenIdx);
-        if (pos !== -1) {
-          showEntry(pos);
-          state.base = $('pad').value;
-          state.gen = '';
-        }
+        showIndex(state.lastPreGenIdx);
+        state.base = $('pad').value;
+        state.gen = '';
         state.lastPreGenIdx = null;
         setUndoEnabled();
       };
       if (undoButton) undoButton.addEventListener('click', undoGeneration);
       const jumpToIndexInput = () => {
-        if (!histInput) return;
-        if (!histInput.value) return;
+        if (!histInput || !histInput.value) return;
         const num = parseInt(histInput.value, 10);
-        const pos = findHistoryPosForIndex(num);
-        if (pos !== -1) {
-          showEntry(pos);
-        } else {
-          histInput.value = state.histPos == null ? '' : (state.history[state.histPos]?.index ?? state.histPos);
-        }
+        showIndex(num);
       };
       if (histInput) {
         histInput.addEventListener('keydown', e => {
@@ -543,26 +635,19 @@
         });
         histInput.addEventListener('blur', jumpToIndexInput);
       }
-
-      const loadHistory = async () => {
+      if (childSelect) {
+        childSelect.addEventListener('change', e => {
+          const raw = e.target.value;
+          if (!raw) return;
+          showId(raw);
+          childSelect.value = '';
+        });
+      }
+      const loadInitial = async () => {
         try {
-          const res = await fetch('/history');
-          if (!res.ok) throw new Error('history fetch failed');
-          const data = await res.json();
-          state.history = (data.entries ?? []).sort((a, b) => (a.index ?? 0) - (b.index ?? 0)).map(entry => ({
-            ...entry,
-            id: entry.id || newId(),
-            params: entry.params || {},
-            pre_gen_index: entry.pre_gen_index
-          }));
-          state.histPos = state.history.length ? state.history.length - 1 : null;
           const hashed = getHashId();
-          let found = false;
-          if (hashed) {
-            found = showById(hashed);
-            if (!found) found = await fetchEntryById(hashed);
-          }
-          if (!found && state.histPos != null) showEntry(state.histPos);
+          if (hashed) await showId(hashed);
+          else await fetchLatest();
           fitPad();
         } catch (err) {
           console.warn(err);
@@ -570,13 +655,11 @@
           updateHistoryStatus();
         }
       };
-
       setRunning(false);
-      loadHistory();
+      loadInitial();
       window.addEventListener('hashchange', () => {
         const id = getHashId();
-        if (!id) return;
-        if (!showById(id)) fetchEntryById(id);
+        if (id) showId(id);
       });
       window.addEventListener('resize', fitPad);
       fitPad();
