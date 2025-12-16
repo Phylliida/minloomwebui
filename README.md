@@ -17,7 +17,7 @@ python loom_server.py
 
 If you go to [http://localhost:5000/](http://localhost:5000/) you should see the ui, something like this:
 
-![loom preview](raw.githubusercontent.com/Phylliida/minloomwebui/refs/heads/main/loom.png)
+![loom preview](https://raw.githubusercontent.com/Phylliida/minloomwebui/refs/heads/main/loom.png)
 
 It's deliberately very minimal. There's an undo but no support for viewing a tree, just you and the text box.
 
