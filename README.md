@@ -19,9 +19,11 @@ If you go to [http://localhost:5000/](http://localhost:5000/) you should see the
 
 It's deliberately very minimal. You can traverse the tree via the arrows (up to parent, left and right to siblings, down to last visited child). ctrl-left, ctrl-right, etc. can press these buttons. Ctrl-enter to pause and begin generation.
 
-Your entire history is stored. You can access it by moving prev and next (or typing in an index), or by copying the current url (which will have a persistent link via a hash).
+Your entire history is stored. You can access it by moving around the tree, or by copying the current url (which will have a persistent link via a hash).
 
-Save those hashes if you want to "bookmark" something.
+Save those hashes if you want to bookmark something.
+
+Has support for modifying inference params like temprature, top_p, top_k, repetition penalty, a generation prefix and postfix, and server url.
 
 You can also navigate around using the browser back and forward buttons.
 
