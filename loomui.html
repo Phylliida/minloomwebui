@@ -287,11 +287,14 @@
         const pad = $('pad');
         if (!pad) return;
         const bar = document.querySelector('.bar');
-        const min = Math.max(0, window.innerHeight - (bar?.offsetHeight || 0));
+        const available = Math.max(0, window.innerHeight - (bar?.offsetHeight || 0));
+        const baseMinHeight = 120;
+        const minHeight = available ? Math.min(baseMinHeight, available) : baseMinHeight;
         const shouldStick = typeof stickToBottomInput === 'boolean' ? stickToBottomInput : isNearBottom();
         const prevScroll = window.scrollY;
         pad.style.height = 'auto';
-        pad.style.height = Math.max(min, pad.scrollHeight) + 'px';
+        const contentHeight = Math.max(minHeight, pad.scrollHeight);
+        pad.style.height = contentHeight + 'px';
         if (shouldStick) window.scrollTo({ top: document.documentElement.scrollHeight });
         else window.scrollTo({ top: prevScroll });
       };
