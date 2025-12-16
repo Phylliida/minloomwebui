@@ -104,6 +104,13 @@
     <div class="cluster">
       <button id="generate" class="primary">Generate</button>
     </div>
+
+    <div class="cluster">
+      <button id="sibPrev" aria-label="Previous sibling">⟵</button>
+      <button id="parentJump" aria-label="Parent">⬆</button>
+      <button id="childJump" aria-label="First child">⬇</button>
+      <button id="sibNext" aria-label="Next sibling">⟶</button>
+    </div>
     <div class="cluster params">
       <label class="param">T <input id="temp" type="number" step="0.1" min="0" value="1"></label>
       <label class="param">top_k <input id="topk" type="number" step="1" min="0" value="0"></label>
@@ -128,10 +135,6 @@
         </select>
       </label>
     </div>
-    <div class="cluster">
-      <button id="sibPrev" aria-label="Previous sibling">⟵</button>
-      <button id="sibNext" aria-label="Next sibling">⟶</button>
-    </div>
     <span id="status" class="status">idle</span>
   </div>
   <textarea id="pad" spellcheck="false" placeholder="Type or paste context here, then press Generate."></textarea>
@@ -150,6 +153,8 @@
       const undoButton = $('undoGen');
       const generateButton = $('generate');
       const childSelect = $('childSelect');
+      const parentJump = $('parentJump');
+      const childJump = $('childJump');
       const sibPrev = $('sibPrev');
       const sibNext = $('sibNext');
       const preview = (text, len = 48) => {
@@ -236,6 +241,12 @@
         }
         return normalized;
       };
+      const ensureParentData = entry => {
+        if (!entry?.parent) return;
+        const parent = entryById(entry.parent);
+        if (parent?.children?.length) return;
+        fetchEntry({ id: entry.parent }).then(() => updateHistoryStatus()).catch(() => {});
+      };
       const setCurrent = entry => {
         if (!entry) return;
         const normalized = storeEntry(entry);
@@ -248,6 +259,7 @@
         });
         setHash(normalized.id);
         updateHistoryStatus();
+        ensureParentData(normalized);
       };
       const updateHistoryStatus = () => {
         const idx = currentIndex();
@@ -262,6 +274,8 @@
         }
         updateChildSelector();
         updateSiblingButtons();
+        updateParentButton();
+        updateChildButton();
       };
       const logChange = text => {
         if (state.ignoreLog) return;
@@ -352,6 +366,15 @@
         const idxLabel = Number.isFinite(entry.index) ? `#${entry.index} ` : '';
         return `${idxLabel}${preview(entry.text, 40)}`;
       };
+      function updateParentButton() {
+        if (!parentJump) return;
+        parentJump.disabled = !state.entry?.parent;
+      }
+      function updateChildButton() {
+        if (!childJump) return;
+        const kids = state.entry?.children ? state.entry.children.filter(Boolean) : [];
+        childJump.disabled = !kids.length;
+      }
       function updateSiblingButtons() {
         if (!sibPrev || !sibNext) return;
         const entry = state.entry;
@@ -365,17 +388,23 @@
         const entry = state.entry;
         if (!entry?.parent) return;
         let parent = entryById(entry.parent);
-        console.log(parent);
         if (!parent) parent = await fetchEntry({ id: entry.parent });
         if (!parent?.children) return;
         const kids = sortChildIds(unique(parent.children));
-        console.log(kids);
         const pos = kids.indexOf(entry.id);
-        console.log(pos);
         const target = kids[pos + delta];
-        console.log(target);
-        console.log(delta);
         if (target) await showId(target);
+      }
+      async function jumpFirstChild() {
+        const entry = state.entry;
+        if (!entry?.children?.length) return;
+        const kids = sortChildIds(unique(entry.children));
+        if (kids[0]) await showId(kids[0]);
+      }
+      async function jumpParent() {
+        const entry = state.entry;
+        if (!entry?.parent) return;
+        await showId(entry.parent);
       }
       function updateChildSelector() {
         if (!childSelect) return;
@@ -590,6 +619,8 @@
       $('generate').addEventListener('click', () => { if (state.controller) stop(); else generate(); });
       $('prev').addEventListener('click', () => showIndex(currentIndex() - 1));
       $('next').addEventListener('click', () => showIndex(currentIndex() + 1));
+      if (parentJump) parentJump.addEventListener('click', () => jumpParent());
+      if (childJump) childJump.addEventListener('click', () => jumpFirstChild());
       if (sibPrev) sibPrev.addEventListener('click', () => jumpSibling(-1));
       if (sibNext) sibNext.addEventListener('click', () => jumpSibling(1));
       document.addEventListener('keydown', e => {
