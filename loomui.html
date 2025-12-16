@@ -139,7 +139,7 @@
     .param.postfix input { width: 180px; }
     .param.url input { width: 260px; }
     .settings-popout {
-      position: absolute;
+      position: fixed;
       top: 52px;
       right: 12px;
       background: #0f172a;
@@ -150,6 +150,8 @@
       z-index: 20;
       min-width: 320px;
       max-width: min(520px, 90vw);
+      max-height: calc(100vh - 72px);
+      overflow: auto;
     }
     .settings-header {
       display: flex;
