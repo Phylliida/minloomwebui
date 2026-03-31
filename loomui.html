@@ -226,6 +226,11 @@
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M16.15 13H5q-.425 0-.712-.288T4 12t.288-.712T5 11h11.15L13.3 8.15q-.3-.3-.288-.7t.288-.7q.3-.3.713-.312t.712.287L19.3 11.3q.15.15.213.325t.062.375t-.062.375t-.213.325l-4.575 4.575q-.3.3-.712.288t-.713-.313q-.275-.3-.288-.7t.288-.7z"/></svg>
         </span>
       </button>
+      <button id="rollout" aria-label="Rollout">
+        <span class="icon" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 12h4m0 0l10-6m-10 6h10m-10 0l10 6"/></svg>
+        </span>
+      </button>
       <span id="siblingCount" class="status"></span>
     </div>
     <div class="cluster history">
@@ -272,6 +277,13 @@
       <label class="param prefix">prefix <input id="prefix" type="text" placeholder="prepend on generate"></label>
       <label class="param postfix">postfix <input id="postfix" type="text" placeholder="append on stop"></label>
     </div>
+    <div class="settings-header" style="margin-top: 12px;">
+      <span>Rollout</span>
+    </div>
+    <div class="settings-row">
+      <label class="param">count <input id="rolloutCount" type="number" step="1" min="1" value="5"></label>
+      <label class="param">tokens <input id="rolloutTokens" type="number" step="1" min="1" value="512"></label>
+    </div>
   </div>
   <div id="padContainer">
     <div id="highlight" aria-hidden="true"></div>
@@ -281,7 +293,7 @@
   <script>
     (() => {
       const $ = id => document.getElementById(id);
-      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false, serverUrl: '', authorship: [], clipboardAuth: null, clipboardText: null, beforeInput: null };
+      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false, serverUrl: '', authorship: [], clipboardAuth: null, clipboardText: null, beforeInput: null, rolloutActive: false, rolloutAborted: false, modelName: null };
       const DEFAULT_COMPLETION_URL = 'http://localhost:8055/completion';
       const SERVER_URL_STORAGE_KEY = 'loomui:serverUrl';
       const newId = () => crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
@@ -296,8 +308,15 @@
         }
         return DEFAULT_COMPLETION_URL;
       };
+      const fetchModelName = () => {
+        const base = getServerUrl().replace(/\/completion\/?$/, '').replace(/\/v1\/chat\/completions\/?$/, '');
+        fetch(base + '/props').then(r => r.ok ? r.json() : null)
+          .then(d => { if (d) state.modelName = d.default_generation_settings?.model || null; })
+          .catch(() => {});
+      };
       const setServerUrl = raw => {
         const normalized = (raw || '').trim() || DEFAULT_COMPLETION_URL;
+        const changed = state.serverUrl !== normalized;
         state.serverUrl = normalized;
         const input = $('serverUrl');
         if (input && input.value !== normalized) input.value = normalized;
@@ -306,6 +325,7 @@
         } catch (err) {
           console.warn('saving server url failed', err);
         }
+        if (changed) fetchModelName();
         return normalized;
       };
       const getServerUrl = () => {
@@ -595,7 +615,8 @@
           prefix: prefix || undefined,
           prefix_raw: prefixRaw || undefined,
           postfix: postfix || undefined,
-          postfix_raw: postfixRaw || undefined
+          postfix_raw: postfixRaw || undefined,
+          model: state.modelName || undefined
         };
       };
       const setParams = params => {
@@ -809,6 +830,10 @@
         const wasGenerating = !!state.controller;
         if (state.controller) state.controller.abort();
         state.controller = null;
+        if (state.rolloutActive) {
+          state.rolloutAborted = true;
+          return;
+        }
         if (wasGenerating) logGenerationEnd();
         setRunning(false);
         $('status').textContent = 'stopped';
@@ -872,6 +897,7 @@
         }
       };
       const generate = async () => {
+        fetchModelName();
         const beforeIdx = currentIndex();
         logChange();
         stop();
@@ -930,8 +956,129 @@
           state.runLoggedEnd = false;
         }
       };
-      $('generate').addEventListener('mousedown', (e) => {if (!state.controller) { e.preventDefault(); generate(); } });
-      $('generate').addEventListener('touchdown', (e) => {if (!state.controller) { e.preventDefault(); generate(); } });
+      const pumpRolloutStream = async (res, signal) => {
+        const reader = res.body?.getReader();
+        if (!reader) throw new Error('No stream');
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let stopped = false;
+        const handle = chunk => {
+          if (chunk === '[DONE]') { stopped = true; return; }
+          try {
+            const msg = JSON.parse(chunk);
+            const piece = msg.content ?? msg.token ?? msg.text ?? '';
+            if (piece) mergeContent(piece);
+            if (msg.stop) stopped = true;
+          } catch (err) { console.error('bad chunk', chunk, err); }
+        };
+        while (!stopped) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let split;
+          while ((split = buffer.indexOf('\n\n')) >= 0) {
+            const packet = buffer.slice(0, split);
+            buffer = buffer.slice(split + 2);
+            for (const line of packet.split(/\n/)) {
+              const d = line.replace(/^data:\s*/, '').trim();
+              if (d) handle(d);
+            }
+            if (stopped) break;
+          }
+        }
+        if (!stopped && buffer.trim()) {
+          for (const line of buffer.split(/\n/)) {
+            const d = line.replace(/^data:\s*/, '').trim();
+            if (d) handle(d);
+          }
+        }
+        try { reader.cancel(); } catch(e) {}
+      };
+      const rollout = async () => {
+        fetchModelName();
+        const count = parseInt($('rolloutCount')?.value) || 5;
+        const tokens = parseInt($('rolloutTokens')?.value) || 512;
+        stop();
+        if (serverUrlInput) setServerUrl(serverUrlInput.value);
+        const baseText = $('pad').value;
+        const baseAuthorship = [...state.authorship];
+        let baseEntryId = currentEntryId();
+        const beforeIdx = currentIndex();
+        if (modified) {
+          modified = false;
+          const id = newId(); const ts = Date.now();
+          try {
+            const res = await fetch('/history', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: baseText, authorship: encodeAuthorship(baseAuthorship), ts: ts/1000, ms: ts, id, params: getParams(), pre_gen_index: state.lastPreGenIdx, parent: selectedParentId() })
+            });
+            if (res.ok) { const data = await res.json(); if (data?.entry) { setCurrent(data.entry); baseEntryId = data.entry.id; } }
+          } catch (err) { console.error('rollout save failed', err); }
+        }
+        let prompt = baseText;
+        let promptAuthorship = [...baseAuthorship];
+        const prefix = getPrefix();
+        if (prefix) { prompt += prefix; for (let i = 0; i < prefix.length; i++) promptAuthorship.push('u'); }
+        state.rolloutActive = true;
+        state.rolloutAborted = false;
+        setRunning(true);
+        for (let i = 0; i < count; i++) {
+          if (state.rolloutAborted) break;
+          $('status').textContent = `rollout ${i + 1}/${count}…`;
+          state.base = prompt;
+          state.gen = '';
+          state.authorship = [...promptAuthorship];
+          state.runId = newId();
+          state.runLoggedEnd = false;
+          state.postfixApplied = false;
+          modified = true;
+          withLogPaused(() => { $('pad').value = prompt; fitPad(true); renderHighlight(); });
+          state.controller = new AbortController();
+          try {
+            const endpoint = getServerUrl();
+            const params = getParams();
+            const { server_url, ...llamaParams } = params;
+            llamaParams.n_predict = tokens;
+            const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ prompt, stream: true, ...llamaParams }), signal: state.controller.signal });
+            if (!res.ok) throw new Error(`Server ${res.status}`);
+            await pumpRolloutStream(res, state.controller.signal);
+            applyPostfix();
+            const content = $('pad').value;
+            const id = newId(); const ts = Date.now();
+            const saveRes = await fetch('/history', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: content, authorship: encodeAuthorship(state.authorship), ts: ts/1000, ms: ts, id, params: { ...getParams(), n_predict: tokens }, pre_gen_index: beforeIdx >= 0 ? beforeIdx : null, parent: baseEntryId })
+            });
+            if (saveRes.ok) { const data = await saveRes.json(); if (data?.entry) storeEntry(data.entry); }
+          } catch (err) {
+            if (err.name === 'AbortError') {
+              if (state.gen) {
+                applyPostfix();
+                const content = $('pad').value;
+                const id = newId(); const ts = Date.now();
+                try {
+                  const saveRes = await fetch('/history', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: content, authorship: encodeAuthorship(state.authorship), ts: ts/1000, ms: ts, id, params: { ...getParams(), n_predict: tokens }, pre_gen_index: beforeIdx >= 0 ? beforeIdx : null, parent: baseEntryId })
+                  });
+                  if (saveRes.ok) { const data = await saveRes.json(); if (data?.entry) storeEntry(data.entry); }
+                } catch(e) {}
+              }
+              break;
+            }
+            $('status').textContent = `rollout error: ${err.message}`;
+            break;
+          }
+          state.controller = null;
+        }
+        state.controller = null;
+        state.rolloutActive = false;
+        state.rolloutAborted = false;
+        setRunning(false);
+        if (baseEntryId) await showId(baseEntryId);
+        $('status').textContent = 'rollout done';
+      };
+      $('generate').addEventListener('mousedown', (e) => { e.preventDefault(); if (state.controller) stop(); else generate(); });
+      $('generate').addEventListener('touchdown', (e) => { e.preventDefault(); if (state.controller) stop(); else generate(); });
+      $('rollout').addEventListener('mousedown', (e) => { e.preventDefault(); if (state.controller) stop(); else rollout(); });
       $('prev').addEventListener('click', () => showIndex(currentIndex() - 1));
       $('next').addEventListener('click', () => showIndex(currentIndex() + 1));
       if (parentJump) parentJump.addEventListener('click', () => jumpParent());
