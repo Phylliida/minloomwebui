@@ -285,6 +285,7 @@
       <label class="param stop">stop <input id="stopTokens" type="text" placeholder="comma-separated"></label>
       <label class="param prefix">prefix <input id="prefix" type="text" placeholder="prepend on generate"></label>
       <label class="param postfix">postfix <input id="postfix" type="text" placeholder="append on stop"></label>
+      <label class="param">show author on hover <input id="hoverLabel" type="checkbox"></label>
     </div>
     <div class="settings-header" style="margin-top: 12px;">
       <span>Rollout</span>
@@ -332,8 +333,12 @@
       const fetchModelName = () => {
         const base = getServerUrl().replace(/\/completion\/?$/, '').replace(/\/v1\/chat\/completions\/?$/, '');
         fetch(base + '/props').then(r => r.ok ? r.json() : null)
-          .then(d => { if (d) state.modelName = d.default_generation_settings?.model || null; })
-          .catch(() => {});
+          .then(d => { if (d) state.modelName = d.default_generation_settings?.model || d.model_path || d.model || null; })
+          .catch(() => {
+            fetch(base + '/v1/models').then(r => r.ok ? r.json() : null)
+              .then(d => { if (d?.data?.[0]?.id) state.modelName = d.data[0].id; })
+              .catch(() => {});
+          });
       };
       const setServerUrl = raw => {
         const normalized = (raw || '').trim() || DEFAULT_COMPLETION_URL;
@@ -1302,8 +1307,17 @@
       loadColors();
       const hoverAuthor = $('hoverAuthor');
       const padContainer = $('padContainer');
+      const hoverCheckbox = $('hoverLabel');
+      if (hoverCheckbox) {
+        hoverCheckbox.checked = localStorage.getItem('loomui:hoverLabel') !== 'off';
+        hoverCheckbox.addEventListener('change', () => {
+          localStorage.setItem('loomui:hoverLabel', hoverCheckbox.checked ? 'on' : 'off');
+          if (!hoverCheckbox.checked) hoverAuthor.textContent = '';
+        });
+      }
       if (padContainer && hoverAuthor) {
         padContainer.addEventListener('mousemove', e => {
+          if (hoverCheckbox && !hoverCheckbox.checked) { hoverAuthor.textContent = ''; return; }
           const x = e.clientX, y = e.clientY;
           const hl = $('highlight');
           if (!hl) { hoverAuthor.textContent = ''; return; }
@@ -1311,7 +1325,7 @@
           for (const span of hl.querySelectorAll('.model-text')) {
             for (const rect of span.getClientRects()) {
               if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
-                hoverAuthor.textContent = model || 'model';
+                hoverAuthor.textContent = model || state.modelName || 'model';
                 hoverAuthor.style.color = 'var(--model-ink)';
                 return;
               }
