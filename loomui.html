@@ -14,6 +14,9 @@
       --border: #1f2937;
       --user-ink: #e5e7eb;
       --model-ink: #c4b5fd;
+      --bar: #0f172a;
+      --btn-ink: #e5e7eb;
+      --btn-bg: #111827;
     }
     * { box-sizing: border-box; }
     html, body {
@@ -36,16 +39,16 @@
       gap: 8px;
       align-items: center;
       padding: 10px;
-      background: #0f172a;
+      background: var(--bar);
       border-bottom: 1px solid var(--border);
     }
     .cluster { display: flex; gap: 8px; align-items: center; }
     .history { gap: 6px; }
     .history input {
       width: 72px;
-      background: #0f172a;
+      background: var(--bar);
       border: 1px solid var(--border);
-      color: var(--ink);
+      color: var(--btn-ink);
       border-radius: 4px;
       padding: 6px 8px;
       font: inherit;
@@ -88,8 +91,8 @@
       padding: 8px 12px;
       font: inherit;
       cursor: pointer;
-      background: #111827;
-      color: var(--ink);
+      background: var(--btn-bg);
+      color: var(--btn-ink);
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -97,8 +100,8 @@
     }
     button:active { transform: translateY(1px); }
     button.primary {
-      background: #111827;
-      color: var(--ink);
+      background: var(--btn-bg);
+      color: var(--btn-ink);
       box-shadow: 0 0 0 1px var(--accent) inset;
     }
     button:disabled { cursor: not-allowed; opacity: 0.5; box-shadow: none; transform: none; }
@@ -109,8 +112,8 @@
       border-radius: 6px;
       padding: 8px 12px;
       font: inherit;
-      background: #111827;
-      color: var(--ink);
+      background: var(--btn-bg);
+      color: var(--btn-ink);
       text-decoration: none;
       display: inline-flex;
       align-items: center;
@@ -136,22 +139,26 @@
       display: block;
     }
     .button-link:active { transform: translateY(1px); }
-    .status { color: var(--muted); font-size: 12px; }
-    .param { color: var(--muted); display: flex; align-items: center; gap: 4px; font-size: 12px; }
+    .status { color: var(--btn-ink); font-size: 12px; }
+    .param { color: var(--btn-ink); display: flex; align-items: center; gap: 4px; font-size: 12px; }
     .param input {
       width: 70px;
-      background: #0f172a;
+      background: var(--bar);
       border: 1px solid var(--border);
-      color: var(--ink);
+      color: var(--btn-ink);
+      accent-color: var(--btn-ink);
       border-radius: 4px;
       padding: 6px 8px;
       font: inherit;
     }
+    input[type="number"] { -moz-appearance: textfield; }
+    input[type="number"]::-webkit-outer-spin-button,
+    input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
     .param select {
       min-width: 160px;
-      background: #0f172a;
+      background: var(--bar);
       border: 1px solid var(--border);
-      color: var(--ink);
+      color: var(--btn-ink);
       border-radius: 4px;
       padding: 6px 8px;
       font: inherit;
@@ -160,20 +167,19 @@
     .param.prefix input { width: 180px; }
     .param.postfix input { width: 180px; }
     .param.url input { width: 260px; }
-    .param input[type="color"] { width: 32px; height: 28px; padding: 2px; cursor: pointer; }
-    #modelTooltip { position: fixed; display: none; padding: 4px 8px; background: #1e293b; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); font-size: 11px; pointer-events: none; z-index: 30; white-space: nowrap; }
+    .param input[type="color"] { width: 32px; height: 28px; padding: 2px; cursor: pointer; background: var(--btn-bg); border: 1px solid var(--border); border-radius: 4px; }
     .settings-popout {
       position: fixed;
       top: 52px;
       right: 12px;
-      background: #0f172a;
+      background: var(--bar);
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 12px;
       box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
       z-index: 20;
-      min-width: 320px;
-      max-width: min(520px, 90vw);
+      min-width: 329px;
+      max-width: min(529px, 90vw);
       max-height: calc(100vh - 72px);
       overflow: auto;
     }
@@ -183,7 +189,7 @@
       justify-content: space-between;
       gap: 8px;
       margin-bottom: 8px;
-      color: var(--muted);
+      color: var(--btn-ink);
       font-weight: 600;
     }
     .settings-row {
@@ -261,6 +267,7 @@
       </button>
     </div>
     <span id="status" class="status">idle</span>
+    <span id="hoverAuthor" class="status"></span>
   </div>
   <div id="settingsPopout" class="settings-popout" hidden>
     <div class="settings-header">
@@ -292,13 +299,17 @@
     <div class="settings-row">
       <label class="param">user <input id="userColor" type="color" value="#e5e7eb"></label>
       <label class="param">model <input id="modelColor" type="color" value="#c4b5fd"></label>
+      <label class="param">bg <input id="bgColor" type="color" value="#0b1220"></label>
+      <label class="param">bar <input id="barColor" type="color" value="#0f172a"></label>
+      <label class="param">icons <input id="btnColor" type="color" value="#e5e7eb"></label>
+      <label class="param">buttons <input id="btnBgColor" type="color" value="#111827"></label>
+      <button id="resetColors" type="button" style="font-size:11px;padding:4px 8px;">reset</button>
     </div>
   </div>
   <div id="padContainer">
     <div id="highlight" aria-hidden="true"></div>
     <textarea id="pad" spellcheck="false" placeholder="Type or paste context here, then press Generate."></textarea>
   </div>
-  <div id="modelTooltip"></div>
 
   <script>
     (() => {
@@ -1259,51 +1270,65 @@
         document.addEventListener('pointerdown', onTouchStop);
       };
       enableTouchStop();
+      const colorMap = { user: '--user-ink', model: '--model-ink', bg: '--paper', bar: '--bar', btn: '--btn-ink', btnBg: '--btn-bg' };
+      const colorInputs = { user: 'userColor', model: 'modelColor', bg: 'bgColor', bar: 'barColor', btn: 'btnColor', btnBg: 'btnBgColor' };
+      const colorDefaults = { user: '#e5e7eb', model: '#c4b5fd', bg: '#0b1220', bar: '#0f172a', btn: '#e5e7eb', btnBg: '#111827' };
       const applyColor = (which, hex) => {
-        document.documentElement.style.setProperty(which === 'user' ? '--user-ink' : '--model-ink', hex);
+        const prop = colorMap[which];
+        if (prop) document.documentElement.style.setProperty(prop, hex);
         try { localStorage.setItem('loomui:' + which + 'Color', hex); } catch(e) {}
       };
       const loadColors = () => {
         try {
-          const u = localStorage.getItem('loomui:userColor');
-          const m = localStorage.getItem('loomui:modelColor');
-          if (u) { applyColor('user', u); if ($('userColor')) $('userColor').value = u; }
-          if (m) { applyColor('model', m); if ($('modelColor')) $('modelColor').value = m; }
+          for (const key of Object.keys(colorMap)) {
+            const hex = localStorage.getItem('loomui:' + key + 'Color');
+            if (hex) { applyColor(key, hex); const el = $(colorInputs[key]); if (el) el.value = hex; }
+          }
         } catch(e) {}
       };
-      if ($('userColor')) $('userColor').addEventListener('input', e => applyColor('user', e.target.value));
-      if ($('modelColor')) $('modelColor').addEventListener('input', e => applyColor('model', e.target.value));
+      const resetColors = () => {
+        for (const key of Object.keys(colorDefaults)) {
+          applyColor(key, colorDefaults[key]);
+          const el = $(colorInputs[key]);
+          if (el) el.value = colorDefaults[key];
+          try { localStorage.removeItem('loomui:' + key + 'Color'); } catch(e) {}
+        }
+      };
+      for (const key of Object.keys(colorInputs)) {
+        const el = $(colorInputs[key]);
+        if (el) el.addEventListener('input', e => applyColor(key, e.target.value));
+      }
+      if ($('resetColors')) $('resetColors').addEventListener('click', resetColors);
       loadColors();
-      let tooltipTimer = null;
-      const tooltipEl = $('modelTooltip');
+      const hoverAuthor = $('hoverAuthor');
       const padContainer = $('padContainer');
-      if (padContainer && tooltipEl) {
+      if (padContainer && hoverAuthor) {
         padContainer.addEventListener('mousemove', e => {
-          tooltipEl.style.display = 'none';
-          clearTimeout(tooltipTimer);
           const x = e.clientX, y = e.clientY;
-          tooltipTimer = setTimeout(() => {
-            const model = state.entry?.params?.model;
-            if (!model) return;
-            const hl = $('highlight');
-            if (!hl) return;
-            for (const span of hl.querySelectorAll('.model-text')) {
-              for (const rect of span.getClientRects()) {
-                if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
-                  tooltipEl.textContent = model;
-                  tooltipEl.style.left = (x + 12) + 'px';
-                  tooltipEl.style.top = (y - 8) + 'px';
-                  tooltipEl.style.display = '';
-                  return;
-                }
+          const hl = $('highlight');
+          if (!hl) { hoverAuthor.textContent = ''; return; }
+          const model = state.entry?.params?.model;
+          for (const span of hl.querySelectorAll('.model-text')) {
+            for (const rect of span.getClientRects()) {
+              if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+                hoverAuthor.textContent = model || 'model';
+                hoverAuthor.style.color = 'var(--model-ink)';
+                return;
               }
             }
-          }, 5000);
+          }
+          for (const span of hl.querySelectorAll('.user-text')) {
+            for (const rect of span.getClientRects()) {
+              if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
+                hoverAuthor.textContent = 'user';
+                hoverAuthor.style.color = 'var(--user-ink)';
+                return;
+              }
+            }
+          }
+          hoverAuthor.textContent = '';
         });
-        padContainer.addEventListener('mouseleave', () => {
-          clearTimeout(tooltipTimer);
-          tooltipEl.style.display = 'none';
-        });
+        padContainer.addEventListener('mouseleave', () => { hoverAuthor.textContent = ''; });
       }
       const loadInitial = async () => {
         try {
