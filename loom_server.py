@@ -74,6 +74,7 @@ def append_entry(
     params: dict | None = None,
     pre_gen_index: int | None = None,
     parent: str | int | None = None,
+    authorship: str | None = None,
 ) -> dict:
     global _history_count, _index_to_id
     idx = history_count()
@@ -105,6 +106,7 @@ def append_entry(
         "params": params or {},
         "pre_gen_index": pre_gen_index,
         "parent": parent_id,
+        "authorship": authorship,
     }
     HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     with HISTORY_FILE.open("a", encoding="utf-8") as fh:
@@ -134,6 +136,7 @@ def normalize_entry(data: dict, fallback_index: int) -> dict:
         "parent": data.get("parent") if isinstance(data.get("parent"), str) else None,
         "children": normalize_children(data.get("children")),
         "lastChildVisited": data.get("lastChildVisited") if isinstance(data.get("lastChildVisited"), str) else None,
+        "authorship": data.get("authorship") if isinstance(data.get("authorship"), str) else None,
     }
 
 
@@ -256,6 +259,7 @@ def history():
             payload.get("params"),
             payload.get("pre_gen_index"),
             payload.get("parent"),
+            payload.get("authorship"),
         )
         return jsonify({"ok": True, "entry": entry})
     entry_id = request.args.get("id")

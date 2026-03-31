@@ -12,6 +12,8 @@
       --accent: #9ca3af;
       --muted: #94a3b8;
       --border: #1f2937;
+      --user-ink: #e5e7eb;
+      --model-ink: #c4b5fd;
     }
     * { box-sizing: border-box; }
     html, body {
@@ -55,11 +57,31 @@
       font: inherit;
       resize: none;
       background: transparent;
-      color: var(--ink);
+      color: transparent;
+      caret-color: var(--ink);
       outline: none;
       field-sizing: content;
       overflow: hidden;
+      position: relative;
+      z-index: 1;
     }
+    textarea::placeholder { color: var(--muted); }
+    textarea::selection { background: rgba(147, 197, 253, 0.3); }
+    #padContainer { position: relative; }
+    #highlight {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      padding: 14px;
+      font: inherit;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      overflow-wrap: break-word;
+      overflow: hidden;
+      pointer-events: none;
+      user-select: none;
+    }
+    .user-text { color: var(--user-ink); }
+    .model-text { color: var(--model-ink); }
     button {
       border: 1px solid var(--border);
       border-radius: 6px;
@@ -251,12 +273,15 @@
       <label class="param postfix">postfix <input id="postfix" type="text" placeholder="append on stop"></label>
     </div>
   </div>
-  <textarea id="pad" spellcheck="false" placeholder="Type or paste context here, then press Generate."></textarea>
+  <div id="padContainer">
+    <div id="highlight" aria-hidden="true"></div>
+    <textarea id="pad" spellcheck="false" placeholder="Type or paste context here, then press Generate."></textarea>
+  </div>
 
   <script>
     (() => {
       const $ = id => document.getElementById(id);
-      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false, serverUrl: '' };
+      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false, serverUrl: '', authorship: [], clipboardAuth: null, clipboardText: null, beforeInput: null };
       const DEFAULT_COMPLETION_URL = 'http://localhost:8055/completion';
       const SERVER_URL_STORAGE_KEY = 'loomui:serverUrl';
       const newId = () => crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
@@ -317,6 +342,52 @@
         return cleaned.length > len ? `${cleaned.slice(0, len)}…` : cleaned;
       };
       const withLogPaused = fn => { state.ignoreLog = true; try { fn(); } finally { state.ignoreLog = false; } };
+      const escapeHtml = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const encodeAuthorship = auth => {
+        if (!auth.length) return '';
+        let r = '', c = auth[0], n = 1;
+        for (let i = 1; i < auth.length; i++) {
+          if (auth[i] === c) n++;
+          else { r += n + c; c = auth[i]; n = 1; }
+        }
+        return r + n + c;
+      };
+      const decodeAuthorship = (enc, len) => {
+        const r = [];
+        if (enc) {
+          const re = /(\d+)([um])/g;
+          let m;
+          while ((m = re.exec(enc)) !== null) {
+            const count = parseInt(m[1]);
+            const type = m[2];
+            for (let i = 0; i < count; i++) r.push(type);
+          }
+        }
+        while (r.length < len) r.push('u');
+        r.length = len;
+        return r;
+      };
+      const renderHighlight = () => {
+        const hl = $('highlight');
+        if (!hl) return;
+        const text = $('pad').value;
+        const auth = state.authorship;
+        if (!text) { hl.innerHTML = ''; return; }
+        let html = '';
+        let i = 0;
+        while (i < text.length) {
+          const tag = (i < auth.length && auth[i] === 'm') ? 'm' : 'u';
+          let j = i + 1;
+          while (j < text.length) {
+            const t = (j < auth.length && auth[j] === 'm') ? 'm' : 'u';
+            if (t !== tag) break;
+            j++;
+          }
+          html += '<span class="' + (tag === 'm' ? 'model-text' : 'user-text') + '">' + escapeHtml(text.slice(i, j)) + '</span>';
+          i = j;
+        }
+        hl.innerHTML = html;
+      };
       const currentIndex = () => Number.isFinite(state.entry?.index) ? state.entry.index : -1;
       const currentEntryId = () => state.entry?.id ?? null;
       const selectedParentId = () => currentEntryId() || getHashId() || null;
@@ -442,9 +513,12 @@
         state.entry = normalized;
         state.lastPreGenIdx = normalized.pre_gen_index ?? state.lastPreGenIdx;
         withLogPaused(() => {
-          $('pad').value = normalized.text ?? '';
+          const text = normalized.text ?? '';
+          $('pad').value = text;
+          state.authorship = decodeAuthorship(normalized.authorship || '', text.length);
           setParams(normalized.params);
           fitPad();
+          renderHighlight();
         });
         setHash(normalized.id);
         updateHistoryStatus();
@@ -484,6 +558,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             text: content,
+            authorship: encodeAuthorship(state.authorship),
             ts: ts / 1000,
             ms: ts,
             id,
@@ -713,6 +788,7 @@
         const wasFocused = document.activeElement === pad;
         const atEnd = wasFocused && pad.selectionStart === pad.value.length && pad.selectionEnd === pad.value.length;
         state.gen += postfix;
+        for (let i = 0; i < postfix.length; i++) state.authorship.push('u');
         pad.value = state.base + state.gen;
         if (wasFocused && atEnd) {
           const pos = pad.value.length;
@@ -721,6 +797,7 @@
         }
         state.postfixApplied = true;
         fitPad(stickToBottom);
+        renderHighlight();
       };
       const logGenerationEnd = () => {
         if (!state.runId || state.runLoggedEnd) return;
@@ -739,6 +816,10 @@
       const mergeContent = text => {
         if (text.startsWith(state.gen)) state.gen = text;
         else state.gen += text;
+        const baseLen = state.base.length;
+        const totalLen = baseLen + state.gen.length;
+        while (state.authorship.length < totalLen) state.authorship.push('m');
+        state.authorship.length = totalLen;
         modified = true;
         const pad = $('pad');
         const stickToBottom = isNearBottom();
@@ -751,6 +832,7 @@
           pad.selectionEnd = pos;
         }
         fitPad(stickToBottom);
+        renderHighlight();
       };
       const handleEvent = chunk => {
         if (chunk === '[DONE]') return stop();
@@ -801,6 +883,7 @@
         const prefix = getPrefix();
         if (prefix) {
           state.base += prefix;
+          for (let i = 0; i < prefix.length; i++) state.authorship.push('u');
           withLogPaused(() => {
             const pad = $('pad');
             if (pad) {
@@ -809,6 +892,7 @@
               pad.selectionStart = pos;
               pad.selectionEnd = pos;
               fitPad(true);
+              renderHighlight();
             }
           });
         }
@@ -901,7 +985,72 @@
           undoGeneration();
         }
       });
-      $('pad').addEventListener('input', () => { fitPad(); flagChange(); });
+      $('pad').addEventListener('beforeinput', e => {
+        state.beforeInput = { text: $('pad').value, selStart: $('pad').selectionStart, selEnd: $('pad').selectionEnd, inputType: e.inputType };
+      });
+      $('pad').addEventListener('input', () => {
+        const pad = $('pad');
+        const before = state.beforeInput;
+        state.beforeInput = null;
+        if (before) {
+          const oldText = before.text;
+          const newText = pad.value;
+          const oldLen = oldText.length;
+          const newLen = newText.length;
+          const inputType = before.inputType || '';
+          let delPos = before.selStart;
+          let delCount = before.selEnd - before.selStart;
+          let insCount;
+          if (inputType === 'historyUndo' || inputType === 'historyRedo') {
+            let s = 0;
+            while (s < oldLen && s < newLen && oldText[s] === newText[s]) s++;
+            let oE = oldLen, nE = newLen;
+            while (oE > s && nE > s && oldText[oE-1] === newText[nE-1]) { oE--; nE--; }
+            delPos = s; delCount = oE - s; insCount = nE - s;
+          } else if (delCount === 0 && newLen < oldLen) {
+            const actualDel = oldLen - newLen;
+            if (inputType.includes('Forward')) { delPos = before.selStart; }
+            else { delPos = Math.max(0, before.selStart - actualDel); }
+            delCount = actualDel;
+            insCount = 0;
+          } else {
+            insCount = Math.max(0, newLen - oldLen + delCount);
+          }
+          if (delCount > 0) state.authorship.splice(delPos, delCount);
+          if (insCount > 0) {
+            let newAuth;
+            if ((inputType === 'insertFromPaste' || inputType === 'insertFromDrop')
+                && state.clipboardAuth && state.clipboardText != null) {
+              const pastedText = newText.slice(delPos, delPos + insCount);
+              if (pastedText === state.clipboardText) {
+                newAuth = [...state.clipboardAuth];
+                while (newAuth.length < insCount) newAuth.push('u');
+                newAuth.length = insCount;
+              } else {
+                newAuth = new Array(insCount).fill('u');
+              }
+            } else {
+              newAuth = new Array(insCount).fill('u');
+            }
+            state.authorship.splice(delPos, 0, ...newAuth);
+          }
+          while (state.authorship.length < newLen) state.authorship.push('u');
+          state.authorship.length = newLen;
+        }
+        renderHighlight();
+        fitPad();
+        flagChange();
+      });
+      $('pad').addEventListener('copy', () => {
+        const pad = $('pad');
+        const s = pad.selectionStart, e = pad.selectionEnd;
+        if (s !== e) { state.clipboardAuth = state.authorship.slice(s, e); state.clipboardText = pad.value.slice(s, e); }
+      });
+      $('pad').addEventListener('cut', () => {
+        const pad = $('pad');
+        const s = pad.selectionStart, e = pad.selectionEnd;
+        if (s !== e) { state.clipboardAuth = state.authorship.slice(s, e); state.clipboardText = pad.value.slice(s, e); }
+      });
       ['temp', 'topk', 'topp', 'minp', 'reppen', 'maxtok', 'stopTokens', 'prefix', 'postfix'].forEach(id => {
         const el = $(id);
         if (el) el.addEventListener('input', () => flagChange());
