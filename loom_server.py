@@ -253,6 +253,11 @@ def diff_page():
     return send_from_directory(app.static_folder, "diff.html")
 
 
+@app.route("/viewer")
+def viewer_page():
+    return send_from_directory(app.static_folder, "viewer.html")
+
+
 @app.route("/wordcloud.js")
 def wordcloud_js():
     return send_from_directory(app.static_folder, "wordcloud.js")

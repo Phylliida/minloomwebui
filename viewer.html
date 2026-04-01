@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Loom Viewer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #e5e7eb; --paper: #0b1220; --bar: #0f172a;
+      --border: #1f2937; --btn-bg: #111827; --btn-ink: #e5e7eb;
+      --highlight: rgba(250, 204, 21, 0.3);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; padding: 16px;
+      font: 14px/1.4 "Iosevka", "JetBrains Mono", "SFMono-Regular", monospace;
+      color: var(--ink); background: var(--paper);
+    }
+    .top-bar {
+      display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    button {
+      border: 1px solid var(--border); border-radius: 6px; padding: 8px 14px;
+      font: inherit; cursor: pointer; background: var(--btn-bg); color: var(--btn-ink);
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .status { font-size: 12px; color: var(--btn-ink); }
+    .back { font-size: 12px; color: var(--btn-ink); text-decoration: none; }
+    .back:hover { color: var(--ink); }
+    #content {
+      white-space: pre-wrap; word-wrap: break-word;
+      padding: 14px; background: var(--bar); border: 1px solid var(--border);
+      border-radius: 8px; min-height: 200px; cursor: pointer;
+    }
+    #content:hover { border-color: var(--ink); }
+    mark {
+      background: var(--highlight); color: inherit;
+      border-radius: 2px; padding: 0 1px;
+    }
+    .word-label { font-size: 13px; color: #fbbf24; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="top-bar">
+    <a class="back" href="/">&#8592; loom</a>
+    <button id="prev">&#9664;</button>
+    <span id="counter" class="status">0/0</span>
+    <button id="next">&#9654;</button>
+    <span id="wordLabel" class="word-label"></span>
+    <span id="statusText" class="status"></span>
+  </div>
+  <div id="content" title="Click to open in loom"></div>
+
+<script>
+(() => {
+  const params = new URLSearchParams(location.search);
+  const parentId = params.get('id');
+  const word = (params.get('word') || '').toLowerCase();
+  const contentEl = document.getElementById('content');
+  const counterEl = document.getElementById('counter');
+  const statusEl = document.getElementById('statusText');
+  const wordLabel = document.getElementById('wordLabel');
+  const prevBtn = document.getElementById('prev');
+  const nextBtn = document.getElementById('next');
+
+  if (word) wordLabel.textContent = '"' + word + '"';
+
+  let entries = []; // filtered children containing the word
+  let currentIdx = 0;
+
+  function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function highlightWord(text, word) {
+    if (!word) return escapeHtml(text);
+    const escaped = escapeHtml(text);
+    const re = new RegExp('\\b(' + word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')\\b', 'gi');
+    return escaped.replace(re, '<mark>$1</mark>');
+  }
+
+  function show(idx) {
+    if (!entries.length) return;
+    currentIdx = Math.max(0, Math.min(idx, entries.length - 1));
+    const entry = entries[currentIdx];
+    contentEl.innerHTML = highlightWord(entry.text || '', word);
+    contentEl.onclick = () => { window.open('/#' + entry.id, '_blank'); };
+    counterEl.textContent = (currentIdx + 1) + '/' + entries.length;
+    prevBtn.disabled = currentIdx === 0;
+    nextBtn.disabled = currentIdx === entries.length - 1;
+  }
+
+  prevBtn.addEventListener('click', () => show(currentIdx - 1));
+  nextBtn.addEventListener('click', () => show(currentIdx + 1));
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); show(currentIdx - 1); }
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); show(currentIdx + 1); }
+  });
+
+  async function load() {
+    if (!parentId) { statusEl.textContent = 'no parent id'; return; }
+    statusEl.textContent = 'loading parent…';
+
+    // Fetch parent to get children list and base text
+    const parentRes = await fetch('/history?id=' + encodeURIComponent(parentId));
+    if (!parentRes.ok) { statusEl.textContent = 'parent not found'; return; }
+    const parentData = await parentRes.json();
+    const parent = parentData.entry;
+    if (!parent) { statusEl.textContent = 'parent not found'; return; }
+
+    const children = parent.children || [];
+    if (!children.length) { statusEl.textContent = 'no children'; return; }
+
+    statusEl.textContent = `fetching ${children.length} children…`;
+    const ids = children.map(c => c.id);
+
+    // Bulk fetch
+    const bulkRes = await fetch('/history/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids })
+    });
+    if (!bulkRes.ok) { statusEl.textContent = 'bulk fetch failed'; return; }
+    const bulkData = await bulkRes.json();
+    const allEntries = Object.values(bulkData.entries || {});
+
+    const baseText = parent.text || '';
+
+    // Filter: children whose suffix contains the word
+    if (word) {
+      const re = new RegExp('\\b' + word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
+      entries = allEntries.filter(e => {
+        const text = e.text || '';
+        const suffix = text.startsWith(baseText) ? text.slice(baseText.length) : text;
+        return re.test(suffix);
+      });
+    } else {
+      entries = allEntries;
+    }
+
+    // Sort by timestamp
+    entries.sort((a, b) => (a.ms || 0) - (b.ms || 0));
+
+    if (!entries.length) {
+      statusEl.textContent = 'no children contain "' + word + '"';
+      return;
+    }
+
+    statusEl.textContent = entries.length + ' of ' + children.length + ' children';
+    show(0);
+  }
+
+  load();
+})();
+</script>
+</body>
+</html>

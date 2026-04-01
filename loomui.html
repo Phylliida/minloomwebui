@@ -1428,6 +1428,13 @@
             responsive: false,
             maintainAspectRatio: false,
             plugins: { legend: { display: false } },
+            onClick: (evt, elements) => {
+              if (!elements.length) return;
+              const idx = elements[0].index;
+              const word = top[idx][0];
+              const parentId = state.entry?.id || '';
+              window.open('/viewer?id=' + encodeURIComponent(parentId) + '&word=' + encodeURIComponent(word), '_blank');
+            },
             scales: {
               x: { min: 0, max: 1, ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--btn-ink').trim(), callback: v => Math.round(v * 100) + '%' }, grid: { color: 'rgba(255,255,255,0.05)' } },
               y: { ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--btn-ink').trim(), autoSkip: false, font: { family: '"Iosevka","JetBrains Mono",monospace', size: 11 } }, grid: { display: false } }
