@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
+from collections import Counter
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -246,6 +248,11 @@ def calendar():
     return send_from_directory(app.static_folder, "calendar.html")
 
 
+@app.route("/wordcloud.js")
+def wordcloud_js():
+    return send_from_directory(app.static_folder, "wordcloud.js")
+
+
 @app.route("/history", methods=["GET", "POST"])
 def history():
     if request.method == "POST":
@@ -288,6 +295,87 @@ def history():
         keep = {"index", "id", "parent", "children", "pre_gen_index", "ts", "ms", "lastChildVisited"}
         entries = [{k: v for k, v in entry.items() if k in keep} for entry in entries]
     return jsonify({"entries": entries, "total": len(entries)})
+
+
+_STOP_WORDS = set(
+    "i,me,my,myself,we,our,ours,ourselves,you,your,yours,yourself,yourselves,"
+    "he,him,his,himself,she,her,hers,herself,it,its,itself,they,them,their,"
+    "theirs,themselves,what,which,who,whom,this,that,these,those,am,is,are,"
+    "was,were,be,been,being,have,has,had,having,do,does,did,doing,a,an,the,"
+    "and,but,if,or,because,as,until,while,of,at,by,for,with,about,against,"
+    "between,into,through,during,before,after,above,below,to,from,up,down,"
+    "in,out,on,off,over,under,again,further,then,once,here,there,when,where,"
+    "why,how,all,any,both,each,few,more,most,other,some,such,no,nor,not,only,"
+    "own,same,so,than,too,very,s,t,can,will,just,don,should,now,d,ll,m,o,re,"
+    "ve,y,ain,aren,couldn,didn,doesn,hadn,hasn,haven,isn,ma,mightn,mustn,"
+    "needn,shan,shouldn,wasn,weren,won,wouldn,also,would,could,said,like,one,"
+    "know,get,go,well,way,got,much,even,make,say,think,see,come,take,want,"
+    "give,use,find,tell,ask,seem,try,leave,call,keep,let,begin,show,hear,"
+    "play,run,move,live,believe,hold,bring,happen,write,provide,sit,stand,"
+    "lose,pay,meet,include,continue,set,learn,change,lead,understand,watch,"
+    "follow,stop,create,speak,read,allow,add,spend,grow,open,walk,win,offer,"
+    "remember,love,consider,appear,buy,wait,serve,die,send,expect,build,stay,"
+    "fall,cut,reach,kill,remain,oh,im,thats,dont,ill,its,cant,didnt,hes,shes,"
+    "youre,theyre,wont,isnt,ive,youve,id,heres,theres,whats,lets,whos,theyve,"
+    "doesnt,wasnt,werent,havent,hasnt,hadnt,arent,couldnt,wouldnt,shouldnt,mustnt"
+    .split(",")
+)
+_WORD_RE = re.compile(r"[a-zA-Z\u00C0-\u024F\u0400-\u04FF]+")
+_wc_cache: dict[tuple[str, int], list] = {}
+
+
+def _split_words(text: str) -> list[str]:
+    return [w for w in (m.group().lower() for m in _WORD_RE.finditer(text)) if len(w) > 1 and w not in _STOP_WORDS]
+
+
+@app.route("/history/wordcloud", methods=["POST"])
+def history_wordcloud():
+    payload = request.get_json(silent=True) or {}
+    parent_id = payload.get("parent_id")
+    if not isinstance(parent_id, str):
+        return jsonify({"error": "parent_id required"}), 400
+
+    entries = read_entries()
+    by_id = {e["id"]: e for e in entries if e.get("id")}
+    parent = by_id.get(parent_id)
+    if not parent:
+        return jsonify({"error": "parent not found"}), 404
+
+    children = [by_id[c["id"]] for c in normalize_children(parent.get("children")) if c["id"] in by_id]
+    cache_key = (parent_id, len(children))
+    if cache_key in _wc_cache:
+        return jsonify(_wc_cache[cache_key])
+
+    base_text = parent.get("text", "")
+    base_words = set(_split_words(base_text))
+    freq: Counter[str] = Counter()
+
+    for child in children:
+        text = child.get("text", "")
+        suffix = text[len(base_text):] if text.startswith(base_text) else text
+        for w in _split_words(suffix):
+            if w not in base_words:
+                freq[w] += 1
+
+    words = [[w, c] for w, c in freq.most_common(300) if c > 1]
+    result = {"words": words, "children_count": len(children)}
+    _wc_cache[cache_key] = result
+    return jsonify(result)
+
+
+@app.route("/history/bulk", methods=["POST"])
+def history_bulk():
+    payload = request.get_json(silent=True) or {}
+    ids = payload.get("ids", [])
+    if not isinstance(ids, list):
+        return jsonify({"error": "ids must be a list"}), 400
+    entries = read_entries()
+    by_id = {e["id"]: e for e in entries if e.get("id")}
+    results = {}
+    for entry_id in ids:
+        if isinstance(entry_id, str) and entry_id in by_id:
+            results[entry_id] = by_id[entry_id]
+    return jsonify({"entries": results})
 
 
 @app.route("/history/action", methods=["POST"])

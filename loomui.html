@@ -4,6 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
   <title>Loom UI</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/d3-cloud@1/build/d3.layout.cloud.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="wordcloud.js"></script>
   <style>
     :root {
       color-scheme: dark;
@@ -197,6 +201,18 @@
       flex-wrap: wrap;
       gap: 8px;
     }
+    #wcModal {
+      position: fixed; inset: 0; background: rgba(0,0,0,.6);
+      display: none; align-items: center; justify-content: center; z-index: 30;
+    }
+    #wcModal.show { display: flex; }
+    #wcPanel {
+      background: var(--bar); border: 1px solid var(--border); border-radius: 8px;
+      padding: 16px; max-width: 90vw; max-height: 90vh; display: flex; flex-direction: column; gap: 8px;
+    }
+    #wcPanel canvas, #wcCanvas { border-radius: 6px; background: var(--paper); }
+    #wcCanvas svg { display: block; }
+    #wcClose { align-self: flex-end; background: none; border: none; color: var(--btn-ink); font-size: 1.4rem; cursor: pointer; }
     @media (max-width: 100%) {
       body { font-size: 42px; }
       textarea, input, button, .status, .param { font-size: inherit; }
@@ -265,6 +281,11 @@
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M14.82 1H9.18l-.647 3.237a8.5 8.5 0 0 0-1.52.88l-3.13-1.059l-2.819 4.884l2.481 2.18a8.6 8.6 0 0 0 0 1.756l-2.481 2.18l2.82 4.884l3.129-1.058c.472.342.98.638 1.52.879L9.18 23h5.64l.647-3.237a8.5 8.5 0 0 0 1.52-.88l3.13 1.059l2.82-4.884l-2.482-2.18a8.6 8.6 0 0 0 0-1.756l2.481-2.18l-2.82-4.884l-3.128 1.058a8.5 8.5 0 0 0-1.52-.879zM12 18a6 6 0 1 0 0-12a6 6 0 0 0 0 12Z" clip-rule="evenodd"/></svg>
         </span>
       </button>
+      <button id="wordcloudBtn" aria-label="Word cloud">
+        <span class="icon" aria-hidden="true">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5c0-2.64-2.05-4.78-4.65-4.96"/></svg>
+        </span>
+      </button>
     </div>
     <span id="status" class="status">idle</span>
     <span id="hoverAuthor" class="status"></span>
@@ -305,6 +326,26 @@
       <label class="param">icons <input id="btnColor" type="color" value="#e5e7eb"></label>
       <label class="param">buttons <input id="btnBgColor" type="color" value="#111827"></label>
       <button id="resetColors" type="button" style="font-size:11px;padding:4px 8px;">reset</button>
+    </div>
+  </div>
+  <div id="wcModal">
+    <div id="wcPanel">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span id="wcTitle" class="status" style="font-size:13px;"></span>
+        <div style="display:flex;gap:4px;align-items:center;">
+          <button id="wcViewCloud" style="font-size:11px;padding:4px 8px;">cloud</button>
+          <button id="wcViewChart" style="font-size:11px;padding:4px 8px;">bars</button>
+          <button id="wcClose">✕</button>
+        </div>
+      </div>
+      <span id="wcStatus" class="status" style="font-size:11px;opacity:0.7;"></span>
+      <div id="wcProgress" style="height:4px;border-radius:2px;background:var(--border);overflow:hidden;display:none;">
+        <div id="wcBar" style="height:100%;width:0%;background:var(--model-ink);transition:width 0.2s;"></div>
+      </div>
+      <div id="wcCanvas"></div>
+      <div id="wcChartWrap" style="display:none;overflow-y:auto;max-height:70vh;">
+        <canvas id="wcChartCanvas"></canvas>
+      </div>
     </div>
   </div>
   <div id="padContainer">
@@ -697,6 +738,7 @@
         if (!childJump) return;
         const kids = normalizeChildren(state.entry?.children);
         childJump.disabled = !kids.length;
+        const wcBtn = $('wordcloudBtn');
       }
       function updateSiblingButtons() {
         if (!sibPrev || !sibNext) return;
@@ -1343,6 +1385,101 @@
           hoverAuthor.textContent = '';
         });
         padContainer.addEventListener('mouseleave', () => { hoverAuthor.textContent = ''; });
+      }
+      // Word cloud & bar chart
+      const wcBtn = $('wordcloudBtn');
+      const wcModal = $('wcModal');
+      const wcClose = $('wcClose');
+      const wcCanvas = $('wcCanvas');
+      const wcTitle = $('wcTitle');
+      const wcChartWrap = $('wcChartWrap');
+      const wcChartCanvas = $('wcChartCanvas');
+      const wcViewCloud = $('wcViewCloud');
+      const wcViewChart = $('wcViewChart');
+      let wcLastFreq = [];
+      let wcLastChildrenCount = 0;
+      let wcChart = null;
+      const wcShowView = view => {
+        wcCanvas.style.display = view === 'cloud' ? '' : 'none';
+        wcChartWrap.style.display = view === 'chart' ? '' : 'none';
+        if (view === 'chart' && wcLastFreq.length) wcRenderChart();
+      };
+      const wcRenderChart = () => {
+        if (typeof Chart === 'undefined' || !wcLastFreq.length) return;
+        const top = wcLastFreq.slice(0, 200);
+        const labels = top.map(([w]) => w);
+        const data = top.map(([, c]) => c);
+        const modelColor = getComputedStyle(document.documentElement).getPropertyValue('--model-ink').trim();
+        const barH = top.length * 15;
+        wcChartCanvas.style.height = barH + 'px';
+        wcChartCanvas.height = barH;
+        wcChartCanvas.width = 680;
+        wcChartCanvas.style.width = '680px';
+        if (wcChart) wcChart.destroy();
+        wcChart = new Chart(wcChartCanvas, {
+          type: 'bar',
+          data: { labels, datasets: [{ data, backgroundColor: modelColor || '#c4b5fd', borderWidth: 0 }] },
+          options: {
+            indexAxis: 'y',
+            responsive: false,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--btn-ink').trim() }, grid: { color: 'rgba(255,255,255,0.05)' } },
+              y: { ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--btn-ink').trim(), autoSkip: false, font: { family: '"Iosevka","JetBrains Mono",monospace', size: 11 } }, grid: { display: false } }
+            }
+          }
+        });
+      };
+      if (wcViewCloud) wcViewCloud.addEventListener('click', () => wcShowView('cloud'));
+      if (wcViewChart) wcViewChart.addEventListener('click', () => wcShowView('chart'));
+      if (wcBtn && wcModal) {
+        const closeWc = () => { wcModal.classList.remove('show'); if (wcChart) { wcChart.destroy(); wcChart = null; } };
+        wcClose.addEventListener('click', closeWc);
+        wcModal.addEventListener('click', e => { if (e.target === wcModal) closeWc(); });
+        document.addEventListener('keydown', e => { if (e.key === 'Escape' && wcModal.classList.contains('show')) closeWc(); });
+        wcBtn.addEventListener('click', async () => {
+          const entry = state.entry;
+          if (!entry?.id) return;
+          const kids = normalizeChildren(entry.children);
+          if (!kids.length) return;
+          wcModal.classList.add('show');
+          wcShowView('cloud');
+          const prog = $('wcProgress'); const bar = $('wcBar'); const wcs = $('wcStatus');
+          prog.style.display = ''; bar.style.width = '0%';
+          wcTitle.textContent = 'Word Cloud';
+          wcs.textContent = `computing for ${kids.length} children…`;
+          wcCanvas.innerHTML = '';
+          bar.style.width = '30%';
+          wcLastFreq = [];
+          wcLastChildrenCount = 0;
+          try {
+            const res = await fetch('/history/wordcloud', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ parent_id: entry.id })
+            });
+            bar.style.width = '80%';
+            if (res.ok) {
+              const data = await res.json();
+              wcLastFreq = data.words || [];
+              wcLastChildrenCount = data.children_count || 0;
+            }
+          } catch (e) { console.error('wordcloud fetch failed', e); }
+          if (!wcLastFreq.length) {
+            wcs.textContent = 'not enough unique words across children';
+            prog.style.display = 'none';
+            return;
+          }
+          bar.style.width = '90%';
+          wcs.textContent = `rendering ${wcLastFreq.length} words…`;
+          await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+          const modelColor = getComputedStyle(document.documentElement).getPropertyValue('--model-ink').trim();
+          window.LoomWordCloud.renderCloud(wcCanvas, wcLastFreq, modelColor);
+          bar.style.width = '100%';
+          wcs.textContent = `${wcLastChildrenCount} children, ${wcLastFreq.length} unique words`;
+          setTimeout(() => { prog.style.display = 'none'; }, 400);
+        });
       }
       const loadInitial = async () => {
         try {
