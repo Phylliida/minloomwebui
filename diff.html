@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Word Cloud Diff</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/d3-cloud@1/build/d3.layout.cloud.min.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --ink: #e5e7eb; --paper: #0b1220; --bar: #0f172a;
+      --border: #1f2937; --btn-bg: #111827; --btn-ink: #e5e7eb;
+      --pos: #86efac; --neg: #fca5a5;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; padding: 16px;
+      font: 14px/1.4 "Iosevka", "JetBrains Mono", "SFMono-Regular", monospace;
+      color: var(--ink); background: var(--paper);
+    }
+    h1 { font-size: 18px; margin: 0 0 12px; }
+    .inputs { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 16px; }
+    .input-group { display: flex; flex-direction: column; gap: 4px; }
+    .input-group label { font-size: 12px; color: var(--btn-ink); }
+    input[type="text"] {
+      background: var(--bar); border: 1px solid var(--border); color: var(--ink);
+      border-radius: 4px; padding: 6px 8px; font: inherit; width: 340px;
+    }
+    button {
+      border: 1px solid var(--border); border-radius: 6px; padding: 8px 16px;
+      font: inherit; cursor: pointer; background: var(--btn-bg); color: var(--btn-ink);
+      transition: transform 120ms ease;
+    }
+    button:active { transform: translateY(1px); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .status { font-size: 12px; color: var(--btn-ink); margin: 8px 0; }
+    .tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+    .tabs button { font-size: 12px; padding: 4px 10px; }
+    #cloudView svg { display: block; width: 100%; }
+    #chartView { overflow-y: auto; max-height: 80vh; }
+    .back { font-size: 12px; margin-bottom: 12px; display: inline-block; color: var(--btn-ink); text-decoration: none; }
+    .back:hover { color: var(--ink); }
+  </style>
+</head>
+<body>
+  <a class="back" href="/">&#8592; back to loom</a>
+  <h1>Word Cloud Diff</h1>
+  <div class="inputs">
+    <div class="input-group">
+      <label>Entry A (id or index)</label>
+      <input id="inputA" type="text" placeholder="paste entry id or index">
+    </div>
+    <div class="input-group">
+      <label>Entry B (id or index)</label>
+      <input id="inputB" type="text" placeholder="paste entry id or index">
+    </div>
+    <button id="goBtn">Compare</button>
+  </div>
+  <div id="statusText" class="status"></div>
+  <div class="tabs" style="display:none;" id="tabBar">
+    <button id="tabCloud">cloud</button>
+    <button id="tabChart">bars</button>
+    <button id="saveCsv" title="Export CSV"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
+  </div>
+  <div id="cloudView"></div>
+  <div id="chartView" style="display:none;"><canvas id="chartCanvas"></canvas></div>
+
+<script>
+(() => {
+  const inputA = document.getElementById('inputA');
+  const inputB = document.getElementById('inputB');
+  const goBtn = document.getElementById('goBtn');
+  const statusText = document.getElementById('statusText');
+  const tabBar = document.getElementById('tabBar');
+  const tabCloud = document.getElementById('tabCloud');
+  const tabChart = document.getElementById('tabChart');
+  const cloudView = document.getElementById('cloudView');
+  const chartView = document.getElementById('chartView');
+  const chartCanvas = document.getElementById('chartCanvas');
+
+  let diffData = []; // [{word, diff}] sorted by |diff| desc
+  let chart = null;
+
+  async function fetchWC(input) {
+    const val = input.trim();
+    if (!val) throw new Error('empty input');
+    // Try as id first
+    let res = await fetch('/history/wordcloud', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parent_id: val })
+    });
+    if (res.ok) return res.json();
+    // Try as index — fetch entry to get id
+    const num = parseInt(val);
+    if (Number.isFinite(num)) {
+      const entryRes = await fetch(`/history?index=${num}`);
+      if (entryRes.ok) {
+        const entryData = await entryRes.json();
+        if (entryData.entry?.id) {
+          res = await fetch('/history/wordcloud', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ parent_id: entryData.entry.id })
+          });
+          if (res.ok) return res.json();
+        }
+      }
+    }
+    throw new Error('could not find entry: ' + val);
+  }
+
+  function computeDiff(wcA, wcB) {
+    const countA = wcA.children_count || 1;
+    const countB = wcB.children_count || 1;
+    const freqA = new Map(wcA.words.map(([w, c]) => [w, c / countA]));
+    const freqB = new Map(wcB.words.map(([w, c]) => [w, c / countB]));
+    const allWords = new Set([...freqA.keys(), ...freqB.keys()]);
+    const result = [];
+    for (const word of allWords) {
+      const a = freqA.get(word) || 0;
+      const b = freqB.get(word) || 0;
+      const diff = b - a; // positive = more in B, negative = more in A
+      if (Math.abs(diff) > 0.001) result.push({ word, diff });
+    }
+    result.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+    return result.slice(0, 300);
+  }
+
+  function renderDiffCloud(container, data) {
+    container.innerHTML = '';
+    if (!data.length || typeof d3 === 'undefined') return;
+
+    const maxAbs = Math.max(...data.map(d => Math.abs(d.diff)));
+    const fontScale = d3.scaleSqrt().domain([0, maxAbs]).range([10, 64]);
+
+    const words = data.map(d => ({
+      text: d.word, size: fontScale(Math.abs(d.diff)), diff: d.diff
+    }));
+
+    const W = 900, H = 600;
+    const layout = d3.layout.cloud()
+      .size([W, H])
+      .words(words)
+      .padding(4)
+      .rotate(0)
+      .font('"Iosevka", "JetBrains Mono", monospace')
+      .fontSize(d => d.size)
+      .on('end', draw);
+
+    layout.start();
+
+    function draw(placed) {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const w of placed) {
+        const halfW = w.text.length * w.size * 0.35;
+        const halfH = w.size * 0.6;
+        if (w.x - halfW < x0) x0 = w.x - halfW;
+        if (w.x + halfW > x1) x1 = w.x + halfW;
+        if (w.y - halfH < y0) y0 = w.y - halfH;
+        if (w.y + halfH > y1) y1 = w.y + halfH;
+      }
+      const pad = 20;
+      x0 -= pad; y0 -= pad; x1 += pad; y1 += pad;
+
+      const svg = d3.select(container).append('svg')
+        .attr('viewBox', `${x0} ${y0} ${x1 - x0} ${y1 - y0}`)
+        .style('width', '100%')
+        .style('height', '80vh');
+
+      svg.append('g')
+        .selectAll('text')
+        .data(placed)
+        .enter().append('text')
+        .style('font-size', d => d.size + 'px')
+        .style('font-family', d => d.font)
+        .style('fill', d => d.diff > 0 ? 'var(--pos)' : 'var(--neg)')
+        .attr('text-anchor', 'middle')
+        .attr('transform', d => `translate(${d.x},${d.y})`)
+        .text(d => d.text)
+        .append('title')
+        .text(d => `${d.text}: ${d.diff > 0 ? '+' : ''}${(d.diff * 100).toFixed(1)}%`);
+    }
+  }
+
+  function renderDiffChart(data) {
+    if (typeof Chart === 'undefined' || !data.length) return;
+    const top = data.slice(0, 200);
+    const labels = top.map(d => d.word);
+    const values = top.map(d => d.diff);
+    const colors = values.map(v => v > 0 ? '#86efac' : '#fca5a5');
+
+    const barH = top.length * 15;
+    chartCanvas.style.height = barH + 'px';
+    chartCanvas.height = barH;
+    chartCanvas.width = 680;
+    chartCanvas.style.width = '680px';
+
+    if (chart) chart.destroy();
+    chart = new Chart(chartCanvas, {
+      type: 'bar',
+      data: { labels, datasets: [{ data: values, backgroundColor: colors, borderWidth: 0 }] },
+      options: {
+        indexAxis: 'y',
+        responsive: false,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false },
+          tooltip: { callbacks: { label: ctx => (ctx.raw > 0 ? '+' : '') + (ctx.raw * 100).toFixed(1) + '%' } }
+        },
+        scales: {
+          x: {
+            ticks: { color: '#e5e7eb', callback: v => (v > 0 ? '+' : '') + Math.round(v * 100) + '%' },
+            grid: { color: 'rgba(255,255,255,0.05)' }
+          },
+          y: {
+            ticks: { color: '#e5e7eb', autoSkip: false, font: { family: '"Iosevka","JetBrains Mono",monospace', size: 11 } },
+            grid: { display: false }
+          }
+        }
+      }
+    });
+  }
+
+  function showView(view) {
+    cloudView.style.display = view === 'cloud' ? '' : 'none';
+    chartView.style.display = view === 'chart' ? '' : 'none';
+    if (view === 'chart' && diffData.length) renderDiffChart(diffData);
+  }
+
+  tabCloud.addEventListener('click', () => showView('cloud'));
+  tabChart.addEventListener('click', () => showView('chart'));
+  document.getElementById('saveCsv').addEventListener('click', () => {
+    if (!diffData.length) return;
+    const rows = ['word,diff_pct'];
+    for (const d of diffData) rows.push(`"${d.word.replace(/"/g,'""')}",${(d.diff * 100).toFixed(2)}`);
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'wordcloud_diff.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  goBtn.addEventListener('click', async () => {
+    const a = inputA.value, b = inputB.value;
+    if (!a || !b) { statusText.textContent = 'enter both entry ids'; return; }
+    goBtn.disabled = true;
+    statusText.textContent = 'fetching word clouds…';
+    cloudView.innerHTML = '';
+    chartView.style.display = 'none';
+    tabBar.style.display = 'none';
+    try {
+      const [wcA, wcB] = await Promise.all([fetchWC(a), fetchWC(b)]);
+      statusText.textContent = `A: ${wcA.children_count} children, ${wcA.words.length} words — B: ${wcB.children_count} children, ${wcB.words.length} words`;
+      diffData = computeDiff(wcA, wcB);
+      if (!diffData.length) {
+        statusText.textContent = 'no differences found';
+        return;
+      }
+      tabBar.style.display = 'flex';
+      statusText.textContent += ` — ${diffData.length} differing words (green = more in B, red = more in A)`;
+      renderDiffCloud(cloudView, diffData);
+    } catch (e) {
+      statusText.textContent = 'error: ' + e.message;
+    } finally {
+      goBtn.disabled = false;
+    }
+  });
+
+  // Restore from URL params
+  const params = new URLSearchParams(location.search);
+  if (params.get('a')) inputA.value = params.get('a');
+  if (params.get('b')) inputB.value = params.get('b');
+  if (params.get('a') && params.get('b')) goBtn.click();
+})();
+</script>
+</body>
+</html>

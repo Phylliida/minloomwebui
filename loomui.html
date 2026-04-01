@@ -336,6 +336,8 @@
         <div style="display:flex;gap:4px;align-items:center;">
           <button id="wcViewCloud" style="font-size:11px;padding:4px 8px;">cloud</button>
           <button id="wcViewChart" style="font-size:11px;padding:4px 8px;">bars</button>
+          <a id="wcDiffLink" href="/diff" target="_blank" rel="noopener noreferrer" style="font-size:11px;padding:4px 8px;color:var(--btn-ink);text-decoration:none;border:1px solid var(--border);border-radius:6px;background:var(--btn-bg);">compare</a>
+          <button id="wcSaveCsv" style="font-size:11px;padding:4px 8px;" title="Export CSV"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg></button>
           <button id="wcClose">✕</button>
         </div>
       </div>
@@ -1408,8 +1410,9 @@
       const wcRenderChart = () => {
         if (typeof Chart === 'undefined' || !wcLastFreq.length) return;
         const top = wcLastFreq.slice(0, 200);
+        const total = wcLastChildrenCount || 1;
         const labels = top.map(([w]) => w);
-        const data = top.map(([, c]) => c);
+        const data = top.map(([, c]) => c / total);
         const modelColor = getComputedStyle(document.documentElement).getPropertyValue('--model-ink').trim();
         const barH = top.length * 15;
         wcChartCanvas.style.height = barH + 'px';
@@ -1426,7 +1429,7 @@
             maintainAspectRatio: false,
             plugins: { legend: { display: false } },
             scales: {
-              x: { ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--btn-ink').trim() }, grid: { color: 'rgba(255,255,255,0.05)' } },
+              x: { min: 0, max: 1, ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--btn-ink').trim(), callback: v => Math.round(v * 100) + '%' }, grid: { color: 'rgba(255,255,255,0.05)' } },
               y: { ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--btn-ink').trim(), autoSkip: false, font: { family: '"Iosevka","JetBrains Mono",monospace', size: 11 } }, grid: { display: false } }
             }
           }
@@ -1434,6 +1437,19 @@
       };
       if (wcViewCloud) wcViewCloud.addEventListener('click', () => wcShowView('cloud'));
       if (wcViewChart) wcViewChart.addEventListener('click', () => wcShowView('chart'));
+      const wcSaveCsv = $('wcSaveCsv');
+      if (wcSaveCsv) wcSaveCsv.addEventListener('click', () => {
+        if (!wcLastFreq.length) return;
+        const total = wcLastChildrenCount || 1;
+        const rows = ['word,count,pct_of_children'];
+        for (const [w, c] of wcLastFreq) rows.push(`"${w.replace(/"/g,'""')}",${c},${(c / total * 100).toFixed(2)}`);
+        const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'wordcloud.csv';
+        a.click();
+        URL.revokeObjectURL(a.href);
+      });
       if (wcBtn && wcModal) {
         const closeWc = () => { wcModal.classList.remove('show'); if (wcChart) { wcChart.destroy(); wcChart = null; } };
         wcClose.addEventListener('click', closeWc);
@@ -1449,6 +1465,8 @@
           const prog = $('wcProgress'); const bar = $('wcBar'); const wcs = $('wcStatus');
           prog.style.display = ''; bar.style.width = '0%';
           wcTitle.textContent = 'Word Cloud';
+          const diffLink = $('wcDiffLink');
+          if (diffLink) diffLink.href = '/diff?a=' + encodeURIComponent(entry.id);
           wcs.textContent = `computing for ${kids.length} children…`;
           wcCanvas.innerHTML = '';
           bar.style.width = '30%';

@@ -248,6 +248,11 @@ def calendar():
     return send_from_directory(app.static_folder, "calendar.html")
 
 
+@app.route("/diff")
+def diff_page():
+    return send_from_directory(app.static_folder, "diff.html")
+
+
 @app.route("/wordcloud.js")
 def wordcloud_js():
     return send_from_directory(app.static_folder, "wordcloud.js")
@@ -353,8 +358,10 @@ def history_wordcloud():
     for child in children:
         text = child.get("text", "")
         suffix = text[len(base_text):] if text.startswith(base_text) else text
+        seen = set()
         for w in _split_words(suffix):
-            if w not in base_words:
+            if w not in base_words and w not in seen:
+                seen.add(w)
                 freq[w] += 1
 
     words = [[w, c] for w, c in freq.most_common(300) if c > 1]
