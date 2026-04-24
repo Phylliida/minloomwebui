@@ -48,7 +48,8 @@
     <button id="prev">&#9664;</button>
     <span id="counter" class="status">0/0</span>
     <button id="next">&#9654;</button>
-    <span id="wordLabel" class="word-label"></span>
+    <input id="wordInput" type="text" class="word-label" style="background:var(--bar);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font:inherit;width:150px;">
+    <button id="wordUpdate" style="font-size:11px;padding:4px 8px;">update</button>
     <span id="statusText" class="status"></span>
   </div>
   <div id="content" title="Click to open in loom"></div>
@@ -57,16 +58,19 @@
 (() => {
   const params = new URLSearchParams(location.search);
   const parentId = params.get('id');
-  const word = (params.get('word') || '').toLowerCase();
+  let word = (params.get('word') || '').toLowerCase();
   const contentEl = document.getElementById('content');
   const counterEl = document.getElementById('counter');
   const statusEl = document.getElementById('statusText');
-  const wordLabel = document.getElementById('wordLabel');
+  const wordInput = document.getElementById('wordInput');
+  const wordUpdateBtn = document.getElementById('wordUpdate');
   const prevBtn = document.getElementById('prev');
   const nextBtn = document.getElementById('next');
 
-  if (word) wordLabel.textContent = '"' + word + '"';
+  wordInput.value = word;
 
+  let allChildren = []; // all fetched children
+  let baseText = '';
   let entries = []; // filtered children containing the word
   let currentIdx = 0;
 
@@ -77,7 +81,8 @@
   function highlightWord(text, word) {
     if (!word) return escapeHtml(text);
     const escaped = escapeHtml(text);
-    const re = new RegExp('\\b(' + word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')\\b', 'gi');
+    // Match the same alpha-token boundaries as the server/filter
+    const re = new RegExp('(?<![a-zA-Z\\u00C0-\\u024F\\u0400-\\u04FF])(' + word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')(?![a-zA-Z\\u00C0-\\u024F\\u0400-\\u04FF])', 'gi');
     return escaped.replace(re, '<mark>$1</mark>');
   }
 
@@ -99,11 +104,53 @@
     if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); show(currentIdx + 1); }
   });
 
+  const WORD_RE = /[a-zA-Z\u00C0-\u024F\u0400-\u04FF]+/g;
+  function textContainsWord(text, w) {
+    let m;
+    while ((m = WORD_RE.exec(text)) !== null) {
+      if (m[0].toLowerCase() === w) { WORD_RE.lastIndex = 0; return true; }
+    }
+    WORD_RE.lastIndex = 0;
+    return false;
+  }
+
+  function filterAndShow() {
+    if (word) {
+      entries = allChildren.filter(e => {
+        const text = e.text || '';
+        const suffix = text.startsWith(baseText) ? text.slice(baseText.length) : text;
+        return textContainsWord(suffix, word);
+      });
+    } else {
+      entries = [...allChildren];
+    }
+    entries.sort((a, b) => (a.ms || 0) - (b.ms || 0));
+    if (!entries.length) {
+      statusEl.textContent = word ? 'no children contain "' + word + '"' : 'no children';
+      contentEl.innerHTML = '';
+      counterEl.textContent = '0/0';
+      return;
+    }
+    statusEl.textContent = entries.length + ' of ' + allChildren.length + ' children';
+    show(0);
+  }
+
+  function updateWord() {
+    word = wordInput.value.trim().toLowerCase();
+    const url = new URL(location.href);
+    if (word) url.searchParams.set('word', word);
+    else url.searchParams.delete('word');
+    history.replaceState(null, '', url);
+    filterAndShow();
+  }
+
+  wordUpdateBtn.addEventListener('click', updateWord);
+  wordInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); updateWord(); } });
+
   async function load() {
     if (!parentId) { statusEl.textContent = 'no parent id'; return; }
     statusEl.textContent = 'loading parent…';
 
-    // Fetch parent to get children list and base text
     const parentRes = await fetch('/history?id=' + encodeURIComponent(parentId));
     if (!parentRes.ok) { statusEl.textContent = 'parent not found'; return; }
     const parentData = await parentRes.json();
@@ -116,7 +163,6 @@
     statusEl.textContent = `fetching ${children.length} children…`;
     const ids = children.map(c => c.id);
 
-    // Bulk fetch
     const bulkRes = await fetch('/history/bulk', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -124,32 +170,10 @@
     });
     if (!bulkRes.ok) { statusEl.textContent = 'bulk fetch failed'; return; }
     const bulkData = await bulkRes.json();
-    const allEntries = Object.values(bulkData.entries || {});
+    allChildren = Object.values(bulkData.entries || {});
+    baseText = parent.text || '';
 
-    const baseText = parent.text || '';
-
-    // Filter: children whose suffix contains the word
-    if (word) {
-      const re = new RegExp('\\b' + word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
-      entries = allEntries.filter(e => {
-        const text = e.text || '';
-        const suffix = text.startsWith(baseText) ? text.slice(baseText.length) : text;
-        return re.test(suffix);
-      });
-    } else {
-      entries = allEntries;
-    }
-
-    // Sort by timestamp
-    entries.sort((a, b) => (a.ms || 0) - (b.ms || 0));
-
-    if (!entries.length) {
-      statusEl.textContent = 'no children contain "' + word + '"';
-      return;
-    }
-
-    statusEl.textContent = entries.length + ' of ' + children.length + ' children';
-    show(0);
+    filterAndShow();
   }
 
   load();

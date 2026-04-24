@@ -375,6 +375,78 @@ def history_wordcloud():
     return jsonify(result)
 
 
+def _compute_all_freqs(parent_id: str) -> tuple[Counter, int] | None:
+    """Return (full_freq_counter, children_count) for a parent, or None."""
+    entries = read_entries()
+    by_id = {e["id"]: e for e in entries if e.get("id")}
+    parent = by_id.get(parent_id)
+    if not parent:
+        return None
+    children = [by_id[c["id"]] for c in normalize_children(parent.get("children")) if c["id"] in by_id]
+    if not children:
+        return Counter(), 0
+    base_text = parent.get("text", "")
+    base_words = set(_split_words(base_text))
+    freq: Counter[str] = Counter()
+    for child in children:
+        text = child.get("text", "")
+        suffix = text[len(base_text):] if text.startswith(base_text) else text
+        seen = set()
+        for w in _split_words(suffix):
+            if w not in base_words and w not in seen:
+                seen.add(w)
+                freq[w] += 1
+    return freq, len(children)
+
+
+_diff_cache: dict[tuple[str, str, int, int], dict] = {}
+
+
+@app.route("/history/wordcloud/diff", methods=["POST"])
+def history_wordcloud_diff():
+    payload = request.get_json(silent=True) or {}
+    id_a = payload.get("id_a")
+    id_b = payload.get("id_b")
+    if not isinstance(id_a, str) or not isinstance(id_b, str):
+        return jsonify({"error": "id_a and id_b required"}), 400
+
+    res_a = _compute_all_freqs(id_a)
+    if res_a is None:
+        return jsonify({"error": "parent A not found"}), 404
+    res_b = _compute_all_freqs(id_b)
+    if res_b is None:
+        return jsonify({"error": "parent B not found"}), 404
+
+    freq_a, count_a = res_a
+    freq_b, count_b = res_b
+
+    cache_key = (id_a, id_b, count_a, count_b)
+    if cache_key in _diff_cache:
+        return jsonify(_diff_cache[cache_key])
+
+    all_words = set(freq_a) | set(freq_b)
+    diffs = []
+    for w in all_words:
+        pct_a = freq_a.get(w, 0) / max(count_a, 1)
+        pct_b = freq_b.get(w, 0) / max(count_b, 1)
+        d = pct_b - pct_a
+        if abs(d) > 0.001:
+            diffs.append([w, round(d, 6)])
+
+    diffs.sort(key=lambda x: abs(x[1]), reverse=True)
+    diffs = diffs[:300]
+
+    result = {
+        "diffs": diffs,
+        "count_a": count_a,
+        "count_b": count_b,
+        "words_a": len(freq_a),
+        "words_b": len(freq_b),
+    }
+    _diff_cache[cache_key] = result
+    return jsonify(result)
+
+
 @app.route("/history/bulk", methods=["POST"])
 def history_bulk():
     payload = request.get_json(silent=True) or {}

@@ -83,50 +83,20 @@
   let diffData = []; // [{word, diff}] sorted by |diff| desc
   let chart = null;
 
-  async function fetchWC(input) {
+  async function resolveId(input) {
     const val = input.trim();
     if (!val) throw new Error('empty input');
-    // Try as id first
-    let res = await fetch('/history/wordcloud', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ parent_id: val })
-    });
-    if (res.ok) return res.json();
-    // Try as index — fetch entry to get id
+    // Check if it's an index
     const num = parseInt(val);
-    if (Number.isFinite(num)) {
-      const entryRes = await fetch(`/history?index=${num}`);
-      if (entryRes.ok) {
-        const entryData = await entryRes.json();
-        if (entryData.entry?.id) {
-          res = await fetch('/history/wordcloud', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ parent_id: entryData.entry.id })
-          });
-          if (res.ok) return res.json();
-        }
+    if (Number.isFinite(num) && String(num) === val) {
+      const res = await fetch(`/history?index=${num}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.entry?.id) return data.entry.id;
       }
+      throw new Error('index not found: ' + val);
     }
-    throw new Error('could not find entry: ' + val);
-  }
-
-  function computeDiff(wcA, wcB) {
-    const countA = wcA.children_count || 1;
-    const countB = wcB.children_count || 1;
-    const freqA = new Map(wcA.words.map(([w, c]) => [w, c / countA]));
-    const freqB = new Map(wcB.words.map(([w, c]) => [w, c / countB]));
-    const allWords = new Set([...freqA.keys(), ...freqB.keys()]);
-    const result = [];
-    for (const word of allWords) {
-      const a = freqA.get(word) || 0;
-      const b = freqB.get(word) || 0;
-      const diff = b - a; // positive = more in B, negative = more in A
-      if (Math.abs(diff) > 0.001) result.push({ word, diff });
-    }
-    result.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
-    return result.slice(0, 300);
+    return val; // assume it's an id
   }
 
   function renderDiffCloud(container, data) {
@@ -247,20 +217,26 @@
     const a = inputA.value, b = inputB.value;
     if (!a || !b) { statusText.textContent = 'enter both entry ids'; return; }
     goBtn.disabled = true;
-    statusText.textContent = 'fetching word clouds…';
+    statusText.textContent = 'computing diff server-side…';
     cloudView.innerHTML = '';
     chartView.style.display = 'none';
     tabBar.style.display = 'none';
     try {
-      const [wcA, wcB] = await Promise.all([fetchWC(a), fetchWC(b)]);
-      statusText.textContent = `A: ${wcA.children_count} children, ${wcA.words.length} words — B: ${wcB.children_count} children, ${wcB.words.length} words`;
-      diffData = computeDiff(wcA, wcB);
+      const [idA, idB] = await Promise.all([resolveId(a), resolveId(b)]);
+      const res = await fetch('/history/wordcloud/diff', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id_a: idA, id_b: idB })
+      });
+      if (!res.ok) { statusText.textContent = 'server error: ' + res.status; return; }
+      const data = await res.json();
+      diffData = (data.diffs || []).map(([word, diff]) => ({ word, diff }));
       if (!diffData.length) {
         statusText.textContent = 'no differences found';
         return;
       }
       tabBar.style.display = 'flex';
-      statusText.textContent += ` — ${diffData.length} differing words (green = more in B, red = more in A)`;
+      statusText.textContent = `A: ${data.count_a} children, ${data.words_a} words — B: ${data.count_b} children, ${data.words_b} words — ${diffData.length} diffs (green = more in B, red = more in A)`;
       renderDiffCloud(cloudView, diffData);
     } catch (e) {
       statusText.textContent = 'error: ' + e.message;

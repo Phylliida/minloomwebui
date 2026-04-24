@@ -363,8 +363,14 @@
       const DEFAULT_COMPLETION_URL = 'http://localhost:8055/completion';
       const SERVER_URL_STORAGE_KEY = 'loomui:serverUrl';
       const newId = () => crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
-      const getHashId = () => (location.hash || '').replace(/^#/, '') || null;
-      const setHash = id => { if (id) location.hash = id; };
+      const getHashId = () => (location.hash || '').replace(/^#/, '').split('?')[0] || null;
+      const getHashParam = key => { const m = location.hash.match(new RegExp('[?&]' + key + '=([^&]*)')); return m ? decodeURIComponent(m[1]) : null; };
+      const setHash = (id, params) => {
+        if (!id) return;
+        let h = id;
+        if (params) { const p = Object.entries(params).filter(([,v]) => v != null).map(([k,v]) => k + '=' + encodeURIComponent(v)).join('&'); if (p) h += '?' + p; }
+        location.hash = h;
+      };
       const readStoredServerUrl = () => {
         try {
           const saved = localStorage.getItem(SERVER_URL_STORAGE_KEY);
@@ -1402,10 +1408,14 @@
       let wcLastFreq = [];
       let wcLastChildrenCount = 0;
       let wcChart = null;
+      let wcCurrentView = 'cloud';
       const wcShowView = view => {
+        wcCurrentView = view;
         wcCanvas.style.display = view === 'cloud' ? '' : 'none';
         wcChartWrap.style.display = view === 'chart' ? '' : 'none';
         if (view === 'chart' && wcLastFreq.length) wcRenderChart();
+        const id = currentEntryId();
+        if (id) setHash(id, { wc: view });
       };
       const wcRenderChart = () => {
         if (typeof Chart === 'undefined' || !wcLastFreq.length) return;
@@ -1427,7 +1437,7 @@
             indexAxis: 'y',
             responsive: false,
             maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
+            plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => (ctx.raw * 100).toFixed(1) + '% (' + top[ctx.dataIndex][1] + '/' + total + ')' } } },
             onClick: (evt, elements) => {
               if (!elements.length) return;
               const idx = elements[0].index;
@@ -1436,7 +1446,7 @@
               window.open('/viewer?id=' + encodeURIComponent(parentId) + '&word=' + encodeURIComponent(word), '_blank');
             },
             scales: {
-              x: { min: 0, max: 1, ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--btn-ink').trim(), callback: v => Math.round(v * 100) + '%' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+              x: { min: 0, ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--btn-ink').trim(), callback: v => (v * 100).toFixed(1) + '%' }, grid: { color: 'rgba(255,255,255,0.05)' } },
               y: { ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--btn-ink').trim(), autoSkip: false, font: { family: '"Iosevka","JetBrains Mono",monospace', size: 11 } }, grid: { display: false } }
             }
           }
@@ -1458,7 +1468,7 @@
         URL.revokeObjectURL(a.href);
       });
       if (wcBtn && wcModal) {
-        const closeWc = () => { wcModal.classList.remove('show'); if (wcChart) { wcChart.destroy(); wcChart = null; } };
+        const closeWc = () => { wcModal.classList.remove('show'); if (wcChart) { wcChart.destroy(); wcChart = null; } const id = currentEntryId(); if (id) setHash(id); };
         wcClose.addEventListener('click', closeWc);
         wcModal.addEventListener('click', e => { if (e.target === wcModal) closeWc(); });
         document.addEventListener('keydown', e => { if (e.key === 'Escape' && wcModal.classList.contains('show')) closeWc(); });
@@ -1505,6 +1515,8 @@
           bar.style.width = '100%';
           wcs.textContent = `${wcLastChildrenCount} children, ${wcLastFreq.length} unique words`;
           setTimeout(() => { prog.style.display = 'none'; }, 400);
+          const restoreView = getHashParam('wc');
+          if (restoreView && restoreView !== 'cloud') wcShowView(restoreView);
         });
       }
       const loadInitial = async () => {
@@ -1517,6 +1529,8 @@
           console.warn(err);
         } finally {
           updateHistoryStatus();
+          const wcParam = getHashParam('wc');
+          if (wcParam && wcBtn) wcBtn.click();
         }
       };
       setRunning(false);
