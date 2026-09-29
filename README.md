@@ -32,3 +32,16 @@ There's a calendar view that allows you to view your entire chronological histor
 ## Source
 
 Ty to codex 5.1 for the help, and GLM 32B base for testing <3
+
+## J-lens hover (optional)
+
+If llama-server is started with `--jlens /path/to/transport.jlns` (the JLNS file
+produced by `jlens-fit` from the jspace tools), the ui gets a `lens` checkbox in
+the bar. While it is enabled the pad is read-only and hovering a generated token
+shows the J-lens per-layer top-5 readouts at that position (plus the model's own
+next-token distribution), via the server's `POST /jlens` endpoint. The first
+hover requests readouts for **all** positions in one go (`all_positions: true`)
+and caches them per token, so subsequent hovers are instant; there is a
+single-position fallback if the server's tokenization disagrees with the
+generation stream. Token boundaries are tracked from the generation stream, so
+hover is only available for text generated in the current session.

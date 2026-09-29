@@ -89,6 +89,36 @@
     }
     .user-text { color: var(--user-ink); }
     .model-text { color: var(--model-ink); }
+    #highlight.jlens { pointer-events: auto; z-index: 2; }
+    #highlight.jlens .tok { cursor: crosshair; border-radius: 3px; }
+    #highlight.jlens .tok:hover { background: rgba(147, 197, 253, 0.25); }
+    #lensTip {
+      position: fixed;
+      z-index: 30;
+      max-width: 720px;
+      max-height: 85vh;
+      overflow-y: auto;
+      background: var(--bar);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 11px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+    }
+    #lensTip .lt-cols {
+      display: flex;
+      gap: 14px;
+    }
+    #lensTip .lt-cols > div {
+      flex: 1 1 0;
+      min-width: 0;
+    }
+    #lensTip .lt-head { color: var(--muted); margin-bottom: 4px; }
+    #lensTip .lt-layer { color: var(--muted); }
+    #lensTip .lt-err { color: #f87171; }
     button {
       border: 1px solid var(--border);
       border-radius: 6px;
@@ -307,6 +337,7 @@
       <label class="param stop">stop <input id="stopTokens" type="text" placeholder="comma-separated"></label>
       <label class="param prefix">prefix <input id="prefix" type="text" placeholder="prepend on generate"></label>
       <label class="param postfix">postfix <input id="postfix" type="text" placeholder="append on stop"></label>
+      <label class="param" title="hover generated tokens for J-lens per-layer readouts (requires llama-server --jlens)"><input id="jlensToggle" type="checkbox"> lens</label>
       <label class="param">show author on hover <input id="hoverLabel" type="checkbox"></label>
     </div>
     <div class="settings-header" style="margin-top: 12px;">
@@ -353,13 +384,14 @@
   </div>
   <div id="padContainer">
     <div id="highlight" aria-hidden="true"></div>
+    <div id="lensTip" hidden></div>
     <textarea id="pad" spellcheck="false" placeholder="Type or paste context here, then press Generate."></textarea>
   </div>
 
   <script>
     (() => {
       const $ = id => document.getElementById(id);
-      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false, serverUrl: '', authorship: [], clipboardAuth: null, clipboardText: null, beforeInput: null, rolloutActive: false, rolloutAborted: false, modelName: null };
+      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false, serverUrl: '', authorship: [], clipboardAuth: null, clipboardText: null, beforeInput: null, rolloutActive: false, rolloutAborted: false, modelName: null, jlensOn: false, genTokens: [], lensCache: new Map(), lensSeq: 0, lensIdx: new Map(), lensReq: null, lensTokMap: null, lensTokReq: null };
       const DEFAULT_COMPLETION_URL = 'http://localhost:8055/completion';
       const SERVER_URL_STORAGE_KEY = 'loomui:serverUrl';
       const newId = () => crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
@@ -469,6 +501,29 @@
         const text = $('pad').value;
         const auth = state.authorship;
         if (!text) { hl.innerHTML = ''; return; }
+        if (state.jlensOn) {
+          // per-token spans over the WHOLE text, from server-side tokenization
+          // (works for prompt + generated text, and survives entry loads/edits)
+          const map = (state.lensTokMap && state.lensTokMap.text === text) ? state.lensTokMap : null;
+          if (!map) {
+            // not tokenized yet: render plain coloring now, re-render when the
+            // tokenize request resolves. Don't spam /tokenize mid-stream.
+            if (!state.controller) ensureLensTokens();
+          } else if (map.toks.length) {
+            let html = '';
+            let cur = 0;
+            map.toks.forEach((t, i) => {
+              if (t.start > cur) html += '<span class="' + ((cur < auth.length && auth[cur] === 'm') ? 'model-text' : 'user-text') + '">' + escapeHtml(text.slice(cur, t.start)) + '</span>';
+              const cls = (t.start < auth.length && auth[t.start] === 'm') ? 'model-text' : 'user-text';
+              html += '<span class="' + cls + ' tok" data-i="' + i + '">' + escapeHtml(text.slice(t.start, t.end)) + '</span>';
+              cur = t.end;
+            });
+            if (cur < text.length) html += '<span class="' + ((cur < auth.length && auth[cur] === 'm') ? 'model-text' : 'user-text') + '">' + escapeHtml(text.slice(cur)) + '</span>';
+            hl.innerHTML = html;
+            return;
+          }
+          // map exists but toks empty: tokenization roundtrip failed; plain coloring
+        }
         let html = '';
         let i = 0;
         while (i < text.length) {
@@ -483,6 +538,138 @@
           i = j;
         }
         hl.innerHTML = html;
+      };
+      const lensPiece = p => p.replace(/\u0120/g, '\u2423').replace(/\u010a/g, '\u21b5').replace(/\u0120/g, '\u2423');
+      const hideLensTip = () => { $('lensTip').hidden = true; state.lensSeq++; };
+      const invalidateLens = () => {
+        state.lensTokMap = null;
+        state.lensCache.clear();
+        state.lensIdx.clear();
+      };
+      // tokenize the full pad text server-side (with pieces) and map each token
+      // to its char range, so hover works over prompt + generated text alike.
+      // pieces are concatenated against the text; if the roundtrip doesn't
+      // reproduce it exactly (byte-fallback tokens), spans are disabled.
+      const ensureLensTokens = () => {
+        const text = $('pad').value;
+        if (!text || state.lensTokReq) return state.lensTokReq;
+        if (state.lensTokMap && state.lensTokMap.text === text) return Promise.resolve(state.lensTokMap);
+        state.lensTokReq = (async () => {
+          try {
+            const origin = new URL(state.serverUrl).origin;
+            const r = await fetch(origin + '/tokenize', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ content: text, with_pieces: true }),
+            });
+            const data = await r.json();
+            const toks = [];
+            let cur = 0, ok = true;
+            for (const t of (data.tokens || [])) {
+              const piece = typeof t.piece === 'string' ? t.piece : null;
+              if (piece === null || !text.startsWith(piece, cur)) { ok = false; break; }
+              toks.push({ start: cur, end: cur + piece.length, id: t.id });
+              cur += piece.length;
+            }
+            state.lensTokMap = { text, toks: (ok && cur === text.length) ? toks : [] };
+          } catch (err) {
+            state.lensTokMap = { text, toks: [] };
+          }
+          state.lensTokReq = null;
+          if (state.jlensOn) renderHighlight();
+          return state.lensTokMap;
+        })();
+        return state.lensTokReq;
+      };
+      const showLensTip = (html, x, y) => {
+        const tip = $('lensTip');
+        tip.innerHTML = html;
+        tip.hidden = false;
+        const w = Math.min(720, window.innerWidth - 24);
+        tip.style.left = Math.min(x + 12, Math.max(4, window.innerWidth - w - 8)) + 'px';
+        tip.style.top = Math.min(y + 14, Math.max(4, window.innerHeight - tip.offsetHeight - 8)) + 'px';
+      };
+      const lensHtml = data => {
+        if (data.error) return '<div class="lt-err">' + escapeHtml(String(data.error)) + '</div>';
+        const fmt = tk => (tk || []).map(t => escapeHtml(lensPiece(t.token))).join(' ');
+        let html = data.model_topk ? '<div class="lt-head">next: ' + fmt(data.model_topk) + '</div>' : '';
+        const layers = (data.layers || []).slice().sort((a, b) => a.layer - b.layer);
+        // two columns: first half of the layers on the left, rest on the right
+        const half = Math.ceil(layers.length / 2);
+        const col = ls => ls.map(l =>
+          '<div><span class="lt-layer">L' + l.layer + '</span> ' + fmt(l.topk) + '</div>').join('');
+        html += '<div class="lt-cols"><div>' + col(layers.slice(0, half)) + '</div><div>' +
+                col(layers.slice(half)) + '</div></div>';
+        return html;
+      };
+      // one in-flight full-text request at a time; fills the per-token cache for
+      // every position so subsequent hovers are instant
+      // GLM-4-32B has 61 blocks; show every layer in the tooltip
+      const LENS_LAYERS = Array.from({ length: 61 }, (_, i) => i);
+      const LENS_TOPK = 3;
+      const requestLensAll = () => {
+        if (state.lensReq) return state.lensReq;
+        const map = state.lensTokMap;
+        const origin = new URL(state.serverUrl).origin;
+        state.lensReq = fetch(origin + '/jlens', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: $('pad').value, pos: -1, topk: LENS_TOPK, layers: LENS_LAYERS, all_positions: true }),
+        }).then(r => r.json()).then(data => {
+          state.lensReq = null;
+          if (data && data.error) return { error: data.error.message || 'jlens error' };
+          if (data && map && data.n_tokens === map.toks.length) {
+            (data.layers || []).forEach(l => (l.positions || []).forEach((tk, i) => {
+              const e = state.lensIdx.get(i) || { layers: [] };
+              if (!e.layers.some(x => x.layer === l.layer)) {
+                e.layers.push({ layer: l.layer, topk: tk });
+              }
+              state.lensIdx.set(i, e);
+            }));
+            if (data.model_topk && data.n_tokens > 0) {
+              const e = state.lensIdx.get(data.n_tokens - 1);
+              if (e) e.model_topk = data.model_topk;
+            }
+          }
+          return data;
+        }).catch(err => { state.lensReq = null; return { error: String(err) }; });
+        return state.lensReq;
+      };
+      const showLensForToken = async (i, x, y) => {
+        const map = state.lensTokMap;
+        const tok = map && map.toks[i];
+        if (!tok) return;
+        const text = $('pad').value;
+        const seq = ++state.lensSeq;
+        showLensTip('<div class="lt-head">…</div>', x, y);
+        let entry = state.lensIdx.get(i);
+        if (!entry) {
+          const data = await requestLensAll();
+          if (seq !== state.lensSeq) return; // mouse already moved on
+          if (data.error) return showLensTip(lensHtml(data), x, y);
+          entry = state.lensIdx.get(i);
+          if (!entry) {
+            // server tokenization disagrees with ours: single-position fallback
+            entry = state.lensCache.get(tok.end);
+            if (!entry) {
+              try {
+                const origin = new URL(state.serverUrl).origin;
+                const res = await fetch(origin + '/jlens', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ content: text.slice(0, tok.end), pos: -1, topk: LENS_TOPK, layers: LENS_LAYERS }),
+                });
+                entry = await res.json();
+                if (entry && entry.error) entry = { error: entry.error.message || 'jlens error' };
+              } catch (err) {
+                entry = { error: String(err) };
+              }
+              state.lensCache.set(tok.end, entry);
+            }
+          }
+        }
+        if (seq !== state.lensSeq) return; // mouse already moved on
+        showLensTip(lensHtml(entry), x, y);
       };
       const currentIndex = () => Number.isFinite(state.entry?.index) ? state.entry.index : -1;
       const currentEntryId = () => state.entry?.id ?? null;
@@ -605,6 +792,8 @@
       };
       const setCurrent = entry => {
         if (!entry) return;
+        state.genTokens = [];
+        invalidateLens();
         const normalized = storeEntry(entry);
         state.entry = normalized;
         state.lastPreGenIdx = normalized.pre_gen_index ?? state.lastPreGenIdx;
@@ -902,6 +1091,7 @@
         applyPostfix();
         state.runLoggedEnd = true;
         logChange();
+        if (state.jlensOn) ensureLensTokens(); // build hover spans once streaming is done
       };
       const stop = () => {
         const wasGenerating = !!state.controller;
@@ -916,8 +1106,14 @@
         $('status').textContent = 'stopped';
       };
       const mergeContent = text => {
-        if (text.startsWith(state.gen)) state.gen = text;
-        else state.gen += text;
+        invalidateLens();
+        if (text.startsWith(state.gen)) { state.gen = text; state.genTokens = []; }
+        else {
+          // llama.cpp streams one content piece per token: record its char range
+          const prevLen = state.gen.length;
+          state.gen += text;
+          state.genTokens.push({ start: prevLen, end: state.gen.length });
+        }
         const baseLen = state.base.length;
         const totalLen = baseLen + state.gen.length;
         while (state.authorship.length < totalLen) state.authorship.push('m');
@@ -1209,10 +1405,27 @@
           undoGeneration();
         }
       });
+      $('jlensToggle').addEventListener('change', e => {
+        state.jlensOn = e.target.checked;
+        $('highlight').classList.toggle('jlens', state.jlensOn);
+        $('pad').readOnly = state.jlensOn;
+        if (!state.jlensOn) hideLensTip();
+        renderHighlight();
+      });
+      $('highlight').addEventListener('mousemove', e => {
+        if (!state.jlensOn) return;
+        const span = e.target.closest ? e.target.closest('.tok') : null;
+        // moving onto the tooltip itself keeps it open so it can be scrolled
+        if (!span) { if (!$('lensTip').matches(':hover')) hideLensTip(); return; }
+        showLensForToken(Number(span.dataset.i), e.clientX, e.clientY);
+      });
+      $('highlight').addEventListener('mouseleave', () => { if (state.jlensOn) hideLensTip(); });
       $('pad').addEventListener('beforeinput', e => {
         state.beforeInput = { text: $('pad').value, selStart: $('pad').selectionStart, selEnd: $('pad').selectionEnd, inputType: e.inputType };
       });
       $('pad').addEventListener('input', () => {
+        state.genTokens = [];
+        invalidateLens();
         const pad = $('pad');
         const before = state.beforeInput;
         state.beforeInput = null;
