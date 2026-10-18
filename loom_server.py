@@ -263,6 +263,16 @@ def wordcloud_js():
     return send_from_directory(app.static_folder, "wordcloud.js")
 
 
+@app.route("/cjk_gloss.json")
+def cjk_gloss_json():
+    return send_from_directory(app.static_folder, "cjk_gloss.json")
+
+
+@app.route("/token_gloss.json")
+def token_gloss_json():
+    return send_from_directory(app.static_folder, "token_gloss.json")
+
+
 @app.route("/history", methods=["GET", "POST"])
 def history():
     if request.method == "POST":

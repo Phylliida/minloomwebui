@@ -97,7 +97,7 @@
       z-index: 30;
       max-width: 720px;
       max-height: 85vh;
-      overflow-y: auto;
+      overflow: hidden;
       background: var(--bar);
       border: 1px solid var(--border);
       border-radius: 6px;
@@ -106,6 +106,7 @@
       line-height: 1.45;
       white-space: pre-wrap;
       word-break: break-word;
+      pointer-events: none; /* never intercept hover; the click panel is the persistent one */
       box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
     }
     #lensTip .lt-cols {
@@ -116,7 +117,54 @@
       flex: 1 1 0;
       min-width: 0;
     }
+    #lensPanel {
+      position: fixed;
+      top: 8px;
+      right: 8px;
+      bottom: 8px;
+      width: 420px;
+      z-index: 29;
+      background: var(--bar);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      display: flex;
+      flex-direction: column;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+    /* docked, not overlaid: the body padding reserves the panel's column so the
+       text reflows clear of it */
+    body.lens-panel-open { padding-right: 436px; }
+    #lensPanel[hidden] { display: none; } /* the display:flex above beats the hidden attribute otherwise */
+    #lensPanelBar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #lensPanelClose {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 16px;
+      cursor: pointer;
+      padding: 0 4px;
+    }
+    #lensPanelClose:hover { color: var(--ink); }
+    #lensPanelBody {
+      padding: 8px 10px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
     #lensTip .lt-head { color: var(--muted); margin-bottom: 4px; }
+    .lt-gloss { color: var(--muted); font-style: italic; }
     #lensTip .lt-layer { color: var(--muted); }
     #lensTip .lt-err { color: #f87171; }
     button {
@@ -211,7 +259,7 @@
       border-radius: 8px;
       padding: 12px;
       box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
-      z-index: 20;
+      z-index: 32; /* above the lens panel (29) and hover tooltip (30) */
       min-width: 329px;
       max-width: min(529px, 90vw);
       max-height: calc(100vh - 72px);
@@ -385,6 +433,10 @@
   <div id="padContainer">
     <div id="highlight" aria-hidden="true"></div>
     <div id="lensTip" hidden></div>
+    <div id="lensPanel" hidden>
+      <div id="lensPanelBar"><span id="lensPanelTitle"></span><button id="lensPanelClose" title="close">×</button></div>
+      <div id="lensPanelBody"></div>
+    </div>
     <textarea id="pad" spellcheck="false" placeholder="Type or paste context here, then press Generate."></textarea>
   </div>
 
@@ -515,7 +567,7 @@
             map.toks.forEach((t, i) => {
               if (t.start > cur) html += '<span class="' + ((cur < auth.length && auth[cur] === 'm') ? 'model-text' : 'user-text') + '">' + escapeHtml(text.slice(cur, t.start)) + '</span>';
               const cls = (t.start < auth.length && auth[t.start] === 'm') ? 'model-text' : 'user-text';
-              html += '<span class="' + cls + ' tok" data-i="' + i + '">' + escapeHtml(text.slice(t.start, t.end)) + '</span>';
+              html += '<span class="' + cls + ' tok" data-i="' + i + '" data-start="' + t.start + '">' + escapeHtml(text.slice(t.start, t.end)) + '</span>';
               cur = t.end;
             });
             if (cur < text.length) html += '<span class="' + ((cur < auth.length && auth[cur] === 'm') ? 'model-text' : 'user-text') + '">' + escapeHtml(text.slice(cur)) + '</span>';
@@ -539,12 +591,18 @@
         }
         hl.innerHTML = html;
       };
-      const lensPiece = p => p.replace(/\u0120/g, '\u2423').replace(/\u010a/g, '\u21b5').replace(/\u0120/g, '\u2423');
+      // display map: real space/newline (and the legacy Ġ/Ċ byte-mapped forms)
+      // -> visible glyphs, everything else (incl. multi-byte UTF-8) as-is
+      const lensPiece = p => p.replace(/ /g, '␣').replace(/\n/g, '↵').replace(/Ġ/g, '␣').replace(/Ċ/g, '↵');
       const hideLensTip = () => { $('lensTip').hidden = true; state.lensSeq++; };
       const invalidateLens = () => {
         state.lensTokMap = null;
         state.lensCache.clear();
         state.lensIdx.clear();
+        // the pinned panel's data no longer matches the text
+        if ($('lensPanel') && !$('lensPanel').hidden) {
+          $('lensPanelBody').innerHTML = '<div class="lt-head">text changed — click a token to refresh</div>';
+        }
       };
       // tokenize the full pad text server-side (with pieces) and map each token
       // to its char range, so hover works over prompt + generated text alike.
@@ -591,7 +649,11 @@
       };
       const lensHtml = data => {
         if (data.error) return '<div class="lt-err">' + escapeHtml(String(data.error)) + '</div>';
-        const fmt = tk => (tk || []).map(t => escapeHtml(lensPiece(t.token))).join(' ');
+        const fmt = tk => (tk || []).map(t => {
+          const s = escapeHtml(lensPiece(t.token));
+          const g = state.cjkGloss && (state.cjkGloss[t.token] ?? state.cjkGloss[t.token.replace(/^ /, '')]);
+          return g ? s + ' <span class="lt-gloss">(' + escapeHtml(g) + ')</span>' : s;
+        }).join(' ');
         let html = data.model_topk ? '<div class="lt-head">next: ' + fmt(data.model_topk) + '</div>' : '';
         const layers = (data.layers || []).slice().sort((a, b) => a.layer - b.layer);
         // two columns: first half of the layers on the left, rest on the right
@@ -607,14 +669,21 @@
       // GLM-4-32B has 61 blocks; show every layer in the tooltip
       const LENS_LAYERS = Array.from({ length: 61 }, (_, i) => i);
       const LENS_TOPK = 3;
+      // token glosses: CC-CEDICT for CJK, model-generated for other scripts
+      state.cjkGloss = null;
+      fetch('token_gloss.json').then(r => r.ok ? r.json() : null)
+        .then(j => { state.cjkGloss = j; }).catch(() => {});
       const requestLensAll = () => {
         if (state.lensReq) return state.lensReq;
         const map = state.lensTokMap;
         const origin = new URL(state.serverUrl).origin;
+        // send the exact token ids we rendered spans for: no server-side
+        // tokenization means no possible mismatch, so the whole-text readout
+        // covers EVERY position (not just the prefix up to the hovered token)
         state.lensReq = fetch(origin + '/jlens', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: $('pad').value, pos: -1, topk: LENS_TOPK, layers: LENS_LAYERS, all_positions: true }),
+          body: JSON.stringify({ tokens: map.toks.map(t => t.id), pos: -1, topk: LENS_TOPK, layers: LENS_LAYERS, all_positions: true }),
         }).then(r => r.json()).then(data => {
           state.lensReq = null;
           if (data && data.error) return { error: data.error.message || 'jlens error' };
@@ -671,6 +740,34 @@
         if (seq !== state.lensSeq) return; // mouse already moved on
         showLensTip(lensHtml(entry), x, y);
       };
+      // persistent per-token panel (opened by clicking a token); shows the same
+      // data as the hover tooltip but stays put and is scrollable
+      const openLensPanel = async i => {
+        const map = state.lensTokMap;
+        const tok = map && map.toks[i];
+        if (!tok) return;
+        hideLensTip();
+        const panel = $('lensPanel');
+        const text = $('pad').value;
+        $('lensPanelTitle').textContent = 'token ' + i + ': "' + lensPiece(text.slice(tok.start, tok.end)) + '"';
+        $('lensPanelBody').innerHTML = '<div class="lt-head">…</div>';
+        panel.hidden = false;
+        document.body.classList.add('lens-panel-open');
+        fitPad(false); // the reserved column narrows the text; recompute height
+        let entry = state.lensIdx.get(i);
+        if (!entry) {
+          const data = await requestLensAll();
+          entry = state.lensIdx.get(i);
+          if (!entry) entry = data && data.error ? data : { error: 'no lens data for this token' };
+        }
+        if (panel.hidden) return; // closed while loading
+        $('lensPanelBody').innerHTML = lensHtml(entry);
+      };
+      $('lensPanelClose').addEventListener('click', () => {
+        $('lensPanel').hidden = true;
+        document.body.classList.remove('lens-panel-open');
+        fitPad(false);
+      });
       const currentIndex = () => Number.isFinite(state.entry?.index) ? state.entry.index : -1;
       const currentEntryId = () => state.entry?.id ?? null;
       const selectedParentId = () => currentEntryId() || getHashId() || null;
@@ -1408,15 +1505,45 @@
       $('jlensToggle').addEventListener('change', e => {
         state.jlensOn = e.target.checked;
         $('highlight').classList.toggle('jlens', state.jlensOn);
-        $('pad').readOnly = state.jlensOn;
         if (!state.jlensOn) hideLensTip();
         renderHighlight();
+      });
+      // browsers may restore the checkbox across a refresh without firing
+      // 'change'; sync JS state with whatever the box actually shows
+      {
+        state.jlensOn = $('jlensToggle').checked;
+        $('highlight').classList.toggle('jlens', state.jlensOn);
+        if (state.jlensOn) renderHighlight();
+      }
+      // the lens overlay sits above the pad for hover events; forward clicks
+      // through to the textarea so the text stays editable with the lens on
+      $('highlight').addEventListener('mousedown', e => {
+        if (!state.jlensOn) return;
+        e.preventDefault();
+        hideLensTip();
+        const pad = $('pad');
+        const span = e.target.closest ? e.target.closest('.tok') : null;
+        let pos = pad.value.length; // clicked bare overlay: caret to end
+        if (span && span.dataset.start !== undefined) {
+          let off = 0;
+          if (document.caretRangeFromPoint) {
+            const r = document.caretRangeFromPoint(e.clientX, e.clientY);
+            if (r && span.contains(r.startContainer)) off = r.startOffset;
+          } else if (document.caretPositionFromPoint) {
+            const p = document.caretPositionFromPoint(e.clientX, e.clientY);
+            if (p && span.contains(p.offsetNode)) off = p.offset;
+          }
+          pos = Number(span.dataset.start) + off;
+        }
+        pad.focus();
+        pad.setSelectionRange(pos, pos);
+        // clicking a token also pins its lens readout into the persistent panel
+        if (span && span.dataset.i !== undefined) openLensPanel(Number(span.dataset.i));
       });
       $('highlight').addEventListener('mousemove', e => {
         if (!state.jlensOn) return;
         const span = e.target.closest ? e.target.closest('.tok') : null;
-        // moving onto the tooltip itself keeps it open so it can be scrolled
-        if (!span) { if (!$('lensTip').matches(':hover')) hideLensTip(); return; }
+        if (!span) return hideLensTip();
         showLensForToken(Number(span.dataset.i), e.clientX, e.clientY);
       });
       $('highlight').addEventListener('mouseleave', () => { if (state.jlensOn) hideLensTip(); });
@@ -1426,6 +1553,7 @@
       $('pad').addEventListener('input', () => {
         state.genTokens = [];
         invalidateLens();
+        if (state.jlensOn) hideLensTip();
         const pad = $('pad');
         const before = state.beforeInput;
         state.beforeInput = null;
