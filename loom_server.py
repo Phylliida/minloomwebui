@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 import uuid
@@ -271,6 +272,29 @@ def cjk_gloss_json():
 @app.route("/token_gloss.json")
 def token_gloss_json():
     return send_from_directory(app.static_folder, "token_gloss.json")
+
+
+# value lens readout stats (color scale + percentiles for the "value" view); the
+# weights themselves are loaded by llama-server --value-probe
+VALUE_READOUT = Path(os.environ.get("LOOM_VALUE_READOUT", "/mnt/models/homeo/value_probe/readout_L40.json"))
+
+
+# fineweb surprisal/entropy percentiles for the value view's output-distribution metrics
+TOKEN_STATS = Path(os.environ.get("LOOM_TOKEN_STATS", "/mnt/models/homeo/value_probe/token_stats_fineweb.json"))
+
+
+@app.route("/token_stats.json")
+def token_stats():
+    if not TOKEN_STATS.is_file():
+        return jsonify({"error": f"{TOKEN_STATS} not found (set LOOM_TOKEN_STATS)"}), 404
+    return send_from_directory(TOKEN_STATS.parent, TOKEN_STATS.name, mimetype="application/json")
+
+
+@app.route("/value_readout.json")
+def value_readout():
+    if not VALUE_READOUT.is_file():
+        return jsonify({"error": f"{VALUE_READOUT} not found (set LOOM_VALUE_READOUT)"}), 404
+    return send_from_directory(VALUE_READOUT.parent, VALUE_READOUT.name, mimetype="application/json")
 
 
 @app.route("/history", methods=["GET", "POST"])

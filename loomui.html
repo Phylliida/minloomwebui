@@ -167,6 +167,10 @@
     .lt-gloss { color: var(--muted); font-style: italic; }
     #lensTip .lt-layer { color: var(--muted); }
     #lensTip .lt-err { color: #f87171; }
+    #lensTip .lt-val, #lensPanelBody .lt-val { margin-bottom: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+    #lensTip .lt-val b, #lensPanelBody .lt-val b { font-weight: 600; }
+    #lensTip .lt-note, #lensPanelBody .lt-note { color: var(--muted); }
+    #lensPanelBody .lt-err { color: #f87171; }
     button {
       border: 1px solid var(--border);
       border-radius: 6px;
@@ -386,6 +390,28 @@
       <label class="param prefix">prefix <input id="prefix" type="text" placeholder="prepend on generate"></label>
       <label class="param postfix">postfix <input id="postfix" type="text" placeholder="append on stop"></label>
       <label class="param" title="hover generated tokens for J-lens per-layer readouts (requires llama-server --jlens)"><input id="jlensToggle" type="checkbox"> lens</label>
+      <label class="param" title="tint tokens by the value lens: how much the next ~32 tokens depend on the model's state here (linear probe on layer 40; requires llama-server --jlens ... --value-probe readout_L40)"><input id="valueToggle" type="checkbox"> value</label>
+      <label class="param" title="metric that tints the tokens in the value view: orange = high, blue = low (vs. fineweb percentiles; the exact metrics vs. this text). Exact metrics are computed by backprop over the whole text (several seconds)">color <select id="valueColor">
+        <optgroup label="probe on layer 40">
+          <option value="stakes">stakes (next 32)</option>
+          <option value="now">next-token dependence</option>
+          <option value="next8">forecast surprisal, next 8</option>
+          <option value="next32">forecast surprisal, next 32</option>
+        </optgroup>
+        <optgroup label="output distribution">
+          <option value="surprisal">surprisal</option>
+          <option value="entropy">entropy</option>
+          <option value="gap">surprise gap (surprisal - entropy)</option>
+          <option value="entropy32">entropy, next 32</option>
+          <option value="branches">branchiness, log(1 / sum p^2)</option>
+          <option value="runner_up">runner-up ratio (p2 / p1)</option>
+        </optgroup>
+        <optgroup label="backprop over the text (slow)">
+          <option value="stakes_all">stakes, all later tokens (exact)</option>
+          <option value="now_x">next-token dependence (exact)</option>
+          <option value="branch">branch impact (gradient, rough)</option>
+        </optgroup>
+      </select></label>
       <label class="param">show author on hover <input id="hoverLabel" type="checkbox"></label>
     </div>
     <div class="settings-header" style="margin-top: 12px;">
@@ -443,7 +469,7 @@
   <script>
     (() => {
       const $ = id => document.getElementById(id);
-      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false, serverUrl: '', authorship: [], clipboardAuth: null, clipboardText: null, beforeInput: null, rolloutActive: false, rolloutAborted: false, modelName: null, jlensOn: false, genTokens: [], lensCache: new Map(), lensSeq: 0, lensIdx: new Map(), lensReq: null, lensTokMap: null, lensTokReq: null };
+      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false, serverUrl: '', authorship: [], clipboardAuth: null, clipboardText: null, beforeInput: null, rolloutActive: false, rolloutAborted: false, modelName: null, jlensOn: false, valueOn: false, colorBy: 'stakes', valueIdx: new Map(), valueText: null, valueReq: null, valueReqText: null, exactText: null, exactReq: null, exactReqText: null, branchText: null, branchReq: null, branchReqText: null, valueMeta: null, statsMeta: null, genTokens: [], lensCache: new Map(), lensSeq: 0, lensIdx: new Map(), lensReq: null, lensTokMap: null, lensTokReq: null };
       const DEFAULT_COMPLETION_URL = 'http://localhost:8055/completion';
       const SERVER_URL_STORAGE_KEY = 'loomui:serverUrl';
       const newId = () => crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
@@ -553,7 +579,7 @@
         const text = $('pad').value;
         const auth = state.authorship;
         if (!text) { hl.innerHTML = ''; return; }
-        if (state.jlensOn) {
+        if (state.jlensOn || state.valueOn) {
           // per-token spans over the WHOLE text, from server-side tokenization
           // (works for prompt + generated text, and survives entry loads/edits)
           const map = (state.lensTokMap && state.lensTokMap.text === text) ? state.lensTokMap : null;
@@ -567,7 +593,7 @@
             map.toks.forEach((t, i) => {
               if (t.start > cur) html += '<span class="' + ((cur < auth.length && auth[cur] === 'm') ? 'model-text' : 'user-text') + '">' + escapeHtml(text.slice(cur, t.start)) + '</span>';
               const cls = (t.start < auth.length && auth[t.start] === 'm') ? 'model-text' : 'user-text';
-              html += '<span class="' + cls + ' tok" data-i="' + i + '" data-start="' + t.start + '">' + escapeHtml(text.slice(t.start, t.end)) + '</span>';
+              html += '<span class="' + cls + ' tok" data-i="' + i + '" data-start="' + t.start + '"' + valueStyle(i, text) + '>' + escapeHtml(text.slice(t.start, t.end)) + '</span>';
               cur = t.end;
             });
             if (cur < text.length) html += '<span class="' + ((cur < auth.length && auth[cur] === 'm') ? 'model-text' : 'user-text') + '">' + escapeHtml(text.slice(cur)) + '</span>';
@@ -603,6 +629,237 @@
         if ($('lensPanel') && !$('lensPanel').hidden) {
           $('lensPanelBody').innerHTML = '<div class="lt-head">text changed — click a token to refresh</div>';
         }
+        state.valueIdx.clear();
+        state.valueText = null;
+        state.exactText = null;
+        state.branchText = null;
+      };
+      // ---- value view: per-token metrics, one of them (state.colorBy) tints the tokens ----
+      // fast: probe readouts on layer 40 (llama-server --value-probe) + surprisal/entropy of the model's own
+      // next-token distribution, one request. exact: backprop over the whole text, requested only when an
+      // exact metric is selected. Colors: orange = high, blue = low.
+      const VALUE_METRICS = [
+        { key: 'stakes', src: 'fast', ref: 'probe', label: 'stakes, next 32 tokens (probe)', fmt: x => Math.exp(x).toFixed(3) },
+        { key: 'now', src: 'fast', ref: 'probe', label: 'next-token dependence (probe)', fmt: x => Math.exp(x).toFixed(3) },
+        { key: 'next8', src: 'fast', ref: 'probe', label: 'forecast surprisal, next 8 (probe)', fmt: x => x.toFixed(2) + ' nats' },
+        { key: 'next32', src: 'fast', ref: 'probe', label: 'forecast surprisal, next 32 (probe)', fmt: x => x.toFixed(2) + ' nats' },
+        { key: 'surprisal', src: 'fast', ref: 'stats', label: 'surprisal of the next token', fmt: x => x.toFixed(2) + ' nats' },
+        { key: 'entropy', src: 'fast', ref: 'stats', label: 'entropy of the next-token distribution', fmt: x => x.toFixed(2) + ' nats' },
+        { key: 'gap', src: 'fast', ref: 'stats', label: 'surprise gap (surprisal - entropy)', fmt: x => (x >= 0 ? '+' : '') + x.toFixed(2) + ' nats' },
+        { key: 'entropy32', src: 'fast', ref: 'stats', label: 'mean entropy over the next 32 tokens', fmt: x => x.toFixed(2) + ' nats' },
+        { key: 'branches', src: 'fast', ref: 'stats', label: 'branchiness, log(1 / sum p^2)', fmt: x => Math.log(x).toFixed(2) + ' nats (~' + x.toFixed(1) + ' strong candidates)' },
+        { key: 'runner_up', src: 'fast', ref: 'stats', label: 'runner-up ratio (p2 / p1)', fmt: x => x.toFixed(2) },
+        { key: 'stakes_all', src: 'exact', ref: 'trend', label: 'stakes, all later tokens (exact)', fmt: x => Math.exp(x).toFixed(3) },
+        { key: 'now_x', src: 'exact', ref: 'text', label: 'next-token dependence (exact)', fmt: x => Math.exp(x).toFixed(3) },
+        { key: 'branch', src: 'branch', ref: 'textlog', label: 'branch impact (gradient, rough)', fmt: x => x.toFixed(2) + ' nats' },
+      ];
+      const valueMetric = () => VALUE_METRICS.find(m => m.key === state.colorBy) || VALUE_METRICS[0];
+      // inverse normal CDF (Acklam), to put percentiles on the z scale the colors use
+      const probit = p => {
+        const a = [-39.69683028665376, 220.9460984245205, -275.9285104469687, 138.3577518672690, -30.66479806614716, 2.506628277459239];
+        const b = [-54.47609879822406, 161.5858368580409, -155.6989798598866, 66.80131188771972, -13.28068155288572];
+        const c = [-0.007784894002430293, -0.3223964580411365, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783];
+        const d = [0.007784695709041462, 0.3224671290700398, 2.445134137142996, 3.754408661907416];
+        const tail = q => (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+        if (p < 0.02425) return tail(Math.sqrt(-2 * Math.log(p)));
+        if (p > 0.97575) return -tail(Math.sqrt(-2 * Math.log(1 - p)));
+        const q = p - 0.5, r = q * q;
+        return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+      };
+      // fineweb percentile of v, interpolated between the stored quantiles (clipped to 0.5..99.5)
+      const fwStats = m => {
+        const meta = m.ref === 'probe' ? state.valueMeta : m.ref === 'stats' ? state.statsMeta : null;
+        return meta && meta.stats && meta.stats[m.key];
+      };
+      const fwPct = (m, v) => {
+        const st = fwStats(m);
+        if (!st || !st.pct) return null;
+        const qs = Object.keys(st.pct).map(Number).sort((x, y) => x - y);
+        if (v <= st.pct[String(qs[0])]) return 0.5;
+        if (v >= st.pct[String(qs[qs.length - 1])]) return 99.5;
+        for (let k = 1; k < qs.length; ++k) {
+          const lo = st.pct[String(qs[k - 1])], hi = st.pct[String(qs[k])];
+          if (v <= hi) return hi > lo ? qs[k - 1] + (qs[k] - qs[k - 1]) * (v - lo) / (hi - lo) : qs[k];
+        }
+        return 99.5;
+      };
+      const valueLoaded = (m, text) => (m.src === 'exact' ? state.exactText : m.src === 'branch' ? state.branchText : state.valueText) === text;
+      // z of metric m at entry e: fineweb percentile on the probit scale, or within this text for exact metrics
+      const valueZOf = (m, e) => {
+        const v = e && e[m.key];
+        if (v === undefined || v === null) return null;
+        if (m.ref === 'trend') return e.z_all === undefined ? null : e.z_all;
+        if (m.ref === 'text') return e.z_nowx === undefined ? null : e.z_nowx;
+        if (m.ref === 'textlog') return e.z_branch === undefined ? null : e.z_branch;
+        const p = fwPct(m, v);
+        return p === null ? null : probit(p / 100);
+      };
+      const valueStyle = (i, text) => {
+        if (!state.valueOn) return '';
+        const m = valueMetric();
+        if (!valueLoaded(m, text)) return '';
+        const z = valueZOf(m, state.valueIdx.get(i));
+        if (z === null) return '';
+        const bg = z >= 0 ? 'rgba(251, 146, 60, ' + Math.min(0.65, 0.22 * z).toFixed(3) + ')'
+                          : 'rgba(96, 165, 250, ' + Math.min(0.4, -0.16 * z).toFixed(3) + ')';
+        return ' style="background:' + bg + '"';
+      };
+      const valueEntry = i => {
+        let e = state.valueIdx.get(i);
+        if (!e) { e = {}; state.valueIdx.set(i, e); }
+        return e;
+      };
+      // exact stakes grow with the number of later tokens, so stakes_all is colored by the residual from a
+      // fit of log stakes_all on log(later predictions) over this text; now_x by its z within the text
+      const valueExactZ = n => {
+        const pts = [], nowv = [];
+        state.valueIdx.forEach((e, i) => {
+          if (e.stakes_all !== null && e.stakes_all !== undefined) pts.push([Math.log(n - 2 - i), e.stakes_all, e]);
+          if (e.now_x !== null && e.now_x !== undefined) nowv.push([e.now_x, e]);
+        });
+        if (pts.length >= 3) {
+          const mx = pts.reduce((s, p) => s + p[0], 0) / pts.length, my = pts.reduce((s, p) => s + p[1], 0) / pts.length;
+          let sxy = 0, sxx = 0;
+          pts.forEach(p => { sxy += (p[0] - mx) * (p[1] - my); sxx += (p[0] - mx) * (p[0] - mx); });
+          const slope = sxx > 0 ? sxy / sxx : 0;
+          const res = pts.map(p => p[1] - my - slope * (p[0] - mx));
+          const sd = Math.sqrt(res.reduce((s, r) => s + r * r, 0) / res.length) || 1;
+          pts.forEach((p, k) => { p[2].z_all = res[k] / sd; });
+        }
+        if (nowv.length >= 3) {
+          const mu = nowv.reduce((s, p) => s + p[0], 0) / nowv.length;
+          const sd = Math.sqrt(nowv.reduce((s, p) => s + (p[0] - mu) * (p[0] - mu), 0) / nowv.length) || 1;
+          nowv.forEach(p => { p[1].z_nowx = (p[0] - mu) / sd; });
+        }
+      };
+      const valuePost = body => fetch(new URL(state.serverUrl).origin + '/jlens', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then(r => r.json());
+      const requestValueFast = (text, map) => {
+        if (state.valueText === text) return Promise.resolve(true);
+        if (state.valueReq && state.valueReqText === text) return state.valueReq;
+        state.valueReqText = text;
+        const p = state.valueReq = valuePost({ content: text, readouts: true, readouts_only: true, token_stats: true }).then(data => {
+          if (state.valueReq === p) state.valueReq = null;
+          if (data && data.error) { state.valueErr = data.error.message || 'readout error'; renderHighlight(); return false; }
+          if (!data || data.n_tokens !== map.toks.length || $('pad').value !== text) return false;
+          for (const block of [data.readouts, data.token_stats]) {
+            if (!block) continue;
+            block.values.forEach((vals, i) => {
+              const e = valueEntry(i);
+              block.names.forEach((n, k) => { e[n] = vals[k]; });
+            });
+          }
+          // derived: gap = surprisal - entropy, entropy32 = mean entropy at the next 32 positions
+          const n = data.n_tokens;
+          for (let i = 0; i < n; ++i) {
+            const e = valueEntry(i);
+            e.gap = (e.surprisal === null || e.surprisal === undefined || e.entropy === undefined) ? null : e.surprisal - e.entropy;
+            let s = 0, c = 0;
+            for (let t = i + 1; t <= Math.min(n - 1, i + 32); ++t) { const h = state.valueIdx.get(t).entropy; if (h !== undefined && h !== null) { s += h; ++c; } }
+            e.entropy32 = c > 0 ? s / c : null;
+          }
+          state.valueText = text;
+          state.valueErr = null;
+          renderHighlight();
+          return true;
+        }).catch(err => { if (state.valueReq === p) state.valueReq = null; state.valueErr = String(err); return false; });
+        return p;
+      };
+      const requestValueExact = (text, map) => {
+        if (state.exactText === text) return Promise.resolve(true);
+        if (state.exactReq && state.exactReqText === text) return state.exactReq;
+        state.exactReqText = text;
+        const p = state.exactReq = valuePost({ content: text, value_exact: true }).then(data => {
+          if (state.exactReq === p) state.exactReq = null;
+          if (data && data.error) { state.valueErr = data.error.message || 'value_exact error'; renderHighlight(); return false; }
+          const ve = data && data.value_exact;
+          if (!ve || data.n_tokens !== map.toks.length || $('pad').value !== text) return false;
+          ve.values.forEach((vals, i) => {
+            const e = valueEntry(i);
+            e.stakes_all = vals[0];
+            e.now_x = vals[1];
+          });
+          valueExactZ(data.n_tokens);
+          state.exactText = text;
+          state.valueErr = null;
+          renderHighlight();
+          return true;
+        }).catch(err => { if (state.exactReq === p) state.exactReq = null; state.valueErr = String(err); return false; });
+        return p;
+      };
+      // branch impact: spread over the model's top candidates of the linearized effect of the next token on the
+      // log-likelihood of all later text (llama-server /jlens branch_grad); colored by z of its log within the text
+      const requestValueBranch = (text, map) => {
+        if (state.branchText === text) return Promise.resolve(true);
+        if (state.branchReq && state.branchReqText === text) return state.branchReq;
+        state.branchReqText = text;
+        const p = state.branchReq = valuePost({ content: text, branch_grad: true }).then(data => {
+          if (state.branchReq === p) state.branchReq = null;
+          if (data && data.error) { state.valueErr = data.error.message || 'branch_grad error'; renderHighlight(); return false; }
+          const br = data && data.branch;
+          if (!br || data.n_tokens !== map.toks.length || $('pad').value !== text) return false;
+          const logs = [];
+          br.spread.forEach((v, i) => {
+            const e = valueEntry(i);
+            e.branch = v;
+            e.branch_cand = br.cand[i];
+            delete e.z_branch;
+            if (v !== null && v > 0) logs.push([Math.log(v), e]);
+          });
+          if (logs.length >= 3) {
+            const mu = logs.reduce((t, q) => t + q[0], 0) / logs.length;
+            const sd = Math.sqrt(logs.reduce((t, q) => t + (q[0] - mu) * (q[0] - mu), 0) / logs.length) || 1;
+            logs.forEach(q => { q[1].z_branch = (q[0] - mu) / sd; });
+          }
+          state.branchText = text;
+          state.valueErr = null;
+          renderHighlight();
+          return true;
+        }).catch(err => { if (state.branchReq === p) state.branchReq = null; state.valueErr = String(err); return false; });
+        return p;
+      };
+      const requestValueAll = () => {
+        const text = $('pad').value;
+        const map = state.lensTokMap;
+        if (!text || !map || map.text !== text || !map.toks.length) return null;
+        const jobs = [requestValueFast(text, map)];
+        if (valueMetric().src === 'exact') jobs.push(requestValueExact(text, map));
+        if (valueMetric().src === 'branch') jobs.push(requestValueBranch(text, map));
+        return Promise.all(jobs).then(r => r.every(Boolean));
+      };
+      const valueHtml = i => {
+        if (!state.valueOn) return '';
+        const text = $('pad').value;
+        const e = state.valueIdx.get(i) || {};
+        const sel = valueMetric();
+        let html = '<div class="lt-val">';
+        if (state.valueErr) html += '<div class="lt-err">' + escapeHtml(state.valueErr) + '</div>';
+        for (const m of VALUE_METRICS) {
+          if (!valueLoaded(m, text)) {
+            if (m === sel) html += '<div class="lt-note">' + escapeHtml(m.label) + ': ' + (m.src !== 'fast' ? 'computing by backprop (several seconds)...' : '...') + '</div>';
+            continue;
+          }
+          const v = e[m.key];
+          if (v === undefined || v === null) continue;
+          let ref = '';
+          const p = fwPct(m, v);
+          if (p !== null) ref = 'fineweb percentile ' + (p <= 0.5 ? '<1' : p >= 99.5 ? '>99' : '~' + Math.round(p));
+          else if (m.key === 'stakes_all' && e.z_all !== undefined) ref = (state.lensTokMap ? state.lensTokMap.toks.length - 2 - i : '?') + ' later tokens; z ' + (e.z_all >= 0 ? '+' : '') + e.z_all.toFixed(2) + ' vs. tokens with as many later tokens in this text';
+          else if (m.key === 'now_x' && e.z_nowx !== undefined) ref = 'z ' + (e.z_nowx >= 0 ? '+' : '') + e.z_nowx.toFixed(2) + ' within this text';
+          else if (m.key === 'branch' && e.z_branch !== undefined) ref = 'z ' + (e.z_branch >= 0 ? '+' : '') + e.z_branch.toFixed(2) + ' (log) within this text';
+          const label = m === sel ? '<b>&#9656; ' + escapeHtml(m.label) + '</b>' : escapeHtml(m.label);
+          html += '<div>' + label + ': <b>' + m.fmt(v) + '</b>' + (ref ? ' <span class="lt-note">(' + ref + ')</span>' : '') + '</div>';
+        }
+        if (e.branch_cand && e.branch_cand.length && state.branchText === text) {
+          // candidates for the next token: probability and linearized effect on the later log-likelihood
+          const cs = e.branch_cand.slice(0, 6).map(c => escapeHtml(lensPiece(c[0])) + ' ' + Math.round(100 * c[1]) + '%' +
+            (c[2] === null ? '' : ' <span class="lt-note">(' + (c[2] >= 0 ? '+' : '') + c[2].toFixed(2) + ')</span>'));
+          html += '<div class="lt-note">next-token candidates (effect on the rest of the text, nats, linearized): </div><div>' + cs.join(', ') + '</div>';
+        }
+        return html + '</div>';
       };
       // tokenize the full pad text server-side (with pieces) and map each token
       // to its char range, so hover works over prompt + generated text alike.
@@ -634,7 +891,8 @@
             state.lensTokMap = { text, toks: [] };
           }
           state.lensTokReq = null;
-          if (state.jlensOn) renderHighlight();
+          if (state.jlensOn || state.valueOn) renderHighlight();
+          if (state.valueOn) requestValueAll();
           return state.lensTokMap;
         })();
         return state.lensTokReq;
@@ -668,7 +926,7 @@
       // every position so subsequent hovers are instant
       // GLM-4-32B has 61 blocks; show every layer in the tooltip
       const LENS_LAYERS = Array.from({ length: 61 }, (_, i) => i);
-      const LENS_TOPK = 3;
+      const LENS_TOPK = 5;
       // token glosses: CC-CEDICT for CJK, model-generated for other scripts
       state.cjkGloss = null;
       fetch('token_gloss.json').then(r => r.ok ? r.json() : null)
@@ -715,7 +973,7 @@
         if (!entry) {
           const data = await requestLensAll();
           if (seq !== state.lensSeq) return; // mouse already moved on
-          if (data.error) return showLensTip(lensHtml(data), x, y);
+          if (data.error) return showLensTip(valueHtml(i) + lensHtml(data), x, y);
           entry = state.lensIdx.get(i);
           if (!entry) {
             // server tokenization disagrees with ours: single-position fallback
@@ -738,7 +996,13 @@
           }
         }
         if (seq !== state.lensSeq) return; // mouse already moved on
-        showLensTip(lensHtml(entry), x, y);
+        showLensTip(valueHtml(i) + lensHtml(entry), x, y);
+      };
+      const showValueForToken = (i, x, y) => {
+        const map = state.lensTokMap;
+        if (!map || !map.toks[i]) return;
+        state.lensSeq++;
+        showLensTip(valueHtml(i), x, y);
       };
       // persistent per-token panel (opened by clicking a token); shows the same
       // data as the hover tooltip but stays put and is scrollable
@@ -754,6 +1018,9 @@
         panel.hidden = false;
         document.body.classList.add('lens-panel-open');
         fitPad(false); // the reserved column narrows the text; recompute height
+        if (state.valueOn && !state.valueIdx.get(i)) await requestValueAll();
+        if (panel.hidden) return; // closed while loading
+        if (!state.jlensOn) { $('lensPanelBody').innerHTML = valueHtml(i); return; }
         let entry = state.lensIdx.get(i);
         if (!entry) {
           const data = await requestLensAll();
@@ -761,7 +1028,7 @@
           if (!entry) entry = data && data.error ? data : { error: 'no lens data for this token' };
         }
         if (panel.hidden) return; // closed while loading
-        $('lensPanelBody').innerHTML = lensHtml(entry);
+        $('lensPanelBody').innerHTML = valueHtml(i) + lensHtml(entry);
       };
       $('lensPanelClose').addEventListener('click', () => {
         $('lensPanel').hidden = true;
@@ -1188,7 +1455,7 @@
         applyPostfix();
         state.runLoggedEnd = true;
         logChange();
-        if (state.jlensOn) ensureLensTokens(); // build hover spans once streaming is done
+        if (state.jlensOn || state.valueOn) ensureLensTokens(); // build hover spans once streaming is done
       };
       const stop = () => {
         const wasGenerating = !!state.controller;
@@ -1502,11 +1769,32 @@
           undoGeneration();
         }
       });
+      const syncHoverMode = () => {
+        const on = state.jlensOn || state.valueOn;
+        $('highlight').classList.toggle('jlens', on);
+        if (!on) hideLensTip();
+        renderHighlight();
+      };
       $('jlensToggle').addEventListener('change', e => {
         state.jlensOn = e.target.checked;
-        $('highlight').classList.toggle('jlens', state.jlensOn);
-        if (!state.jlensOn) hideLensTip();
+        syncHoverMode();
+      });
+      $('valueToggle').addEventListener('change', async e => {
+        state.valueOn = e.target.checked;
+        if (state.valueOn && !state.valueMeta) {
+          // fineweb percentiles for the color scale, served by the loom server (optional)
+          try { state.valueMeta = await (await fetch('/value_readout.json')).json(); } catch (err) { state.valueMeta = null; }
+          try { state.statsMeta = await (await fetch('/token_stats.json')).json(); } catch (err) { state.statsMeta = null; }
+        }
+        syncHoverMode();
+        if (state.valueOn) { const p = ensureLensTokens(); if (p) p.then(() => requestValueAll()); else requestValueAll(); }
+      });
+      $('valueColor').addEventListener('change', e => {
+        state.colorBy = e.target.value;
+        try { localStorage.setItem('loomValueColor', state.colorBy); } catch (err) { /* storage unavailable */ }
+        state.valueErr = null;
         renderHighlight();
+        if (state.valueOn) { const p = ensureLensTokens(); if (p) p.then(() => requestValueAll()); else requestValueAll(); }
       });
       // browsers may restore the checkbox across a refresh without firing
       // 'change'; sync JS state with whatever the box actually shows
@@ -1514,11 +1802,17 @@
         state.jlensOn = $('jlensToggle').checked;
         $('highlight').classList.toggle('jlens', state.jlensOn);
         if (state.jlensOn) renderHighlight();
+        try {
+          const saved = localStorage.getItem('loomValueColor');
+          if (saved && VALUE_METRICS.some(m => m.key === saved)) $('valueColor').value = saved;
+        } catch (err) { /* storage unavailable */ }
+        state.colorBy = $('valueColor').value;
+        if ($('valueToggle').checked) $('valueToggle').dispatchEvent(new Event('change'));
       }
       // the lens overlay sits above the pad for hover events; forward clicks
       // through to the textarea so the text stays editable with the lens on
       $('highlight').addEventListener('mousedown', e => {
-        if (!state.jlensOn) return;
+        if (!state.jlensOn && !state.valueOn) return;
         e.preventDefault();
         hideLensTip();
         const pad = $('pad');
@@ -1541,19 +1835,20 @@
         if (span && span.dataset.i !== undefined) openLensPanel(Number(span.dataset.i));
       });
       $('highlight').addEventListener('mousemove', e => {
-        if (!state.jlensOn) return;
+        if (!state.jlensOn && !state.valueOn) return;
         const span = e.target.closest ? e.target.closest('.tok') : null;
         if (!span) return hideLensTip();
-        showLensForToken(Number(span.dataset.i), e.clientX, e.clientY);
+        if (state.jlensOn) showLensForToken(Number(span.dataset.i), e.clientX, e.clientY);
+        else showValueForToken(Number(span.dataset.i), e.clientX, e.clientY);
       });
-      $('highlight').addEventListener('mouseleave', () => { if (state.jlensOn) hideLensTip(); });
+      $('highlight').addEventListener('mouseleave', () => { if (state.jlensOn || state.valueOn) hideLensTip(); });
       $('pad').addEventListener('beforeinput', e => {
         state.beforeInput = { text: $('pad').value, selStart: $('pad').selectionStart, selEnd: $('pad').selectionEnd, inputType: e.inputType };
       });
       $('pad').addEventListener('input', () => {
         state.genTokens = [];
         invalidateLens();
-        if (state.jlensOn) hideLensTip();
+        if (state.jlensOn || state.valueOn) hideLensTip();
         const pad = $('pad');
         const before = state.beforeInput;
         state.beforeInput = null;
