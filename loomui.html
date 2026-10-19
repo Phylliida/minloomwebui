@@ -253,6 +253,16 @@
     .param.prefix input { width: 180px; }
     .param.postfix input { width: 180px; }
     .param.url input { width: 260px; }
+    .param.dir-pick { flex: 1 1 100%; }
+    .param.dir-pick select { flex: 1; min-width: 0; }
+    .dir-info { color: var(--btn-ink); font-size: 11px; line-height: 1.45; margin-top: 6px; opacity: 0.85; }
+    .dir-info > div { margin-bottom: 3px; }
+    .dir-info code { background: var(--btn-bg); border: 1px solid var(--border); border-radius: 3px; padding: 0 3px; white-space: pre; }
+    .dir-info code b { color: rgb(251, 146, 60); font-weight: 600; }
+    .dir-info .hi { color: rgb(251, 146, 60); }
+    .dir-info .lo { color: rgb(96, 165, 250); }
+    #lensTip .lt-dir-hi, #lensPanelBody .lt-dir-hi { color: rgb(251, 146, 60); }
+    #lensTip .lt-dir-lo, #lensPanelBody .lt-dir-lo { color: rgb(96, 165, 250); }
     .param input[type="color"] { width: 32px; height: 28px; padding: 2px; cursor: pointer; background: var(--btn-bg); border: 1px solid var(--border); border-radius: 4px; }
     .settings-popout {
       position: fixed;
@@ -411,8 +421,21 @@
           <option value="now_x">next-token dependence (exact)</option>
           <option value="branch">branch impact (gradient, rough)</option>
         </optgroup>
+        <optgroup label="regulated directions (layer sweep)">
+          <option value="dir">direction probe (pick below)</option>
+        </optgroup>
       </select></label>
       <label class="param">show author on hover <input id="hoverLabel" type="checkbox"></label>
+    </div>
+    <div id="dirSection" hidden>
+      <div class="settings-header" style="margin-top: 12px;">
+        <span>Direction probes</span>
+      </div>
+      <div class="settings-row">
+        <label class="param" title="layers where the layer sweep found directions that clear the noise; the percentages are the strongest held-out effects at that layer">layer <select id="dirLayer"></select></label>
+        <label class="param dir-pick" title="pushed back: writing undoes part of a push along it (held-out kappa > 0); amplified: writing adds to it (kappa < 0). The percentage is the held-out kappa">direction <select id="dirPick"></select></label>
+      </div>
+      <div id="dirInfo" class="dir-info"></div>
     </div>
     <div class="settings-header" style="margin-top: 12px;">
       <span>Rollout</span>
@@ -469,7 +492,7 @@
   <script>
     (() => {
       const $ = id => document.getElementById(id);
-      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false, serverUrl: '', authorship: [], clipboardAuth: null, clipboardText: null, beforeInput: null, rolloutActive: false, rolloutAborted: false, modelName: null, jlensOn: false, valueOn: false, colorBy: 'stakes', valueIdx: new Map(), valueText: null, valueReq: null, valueReqText: null, exactText: null, exactReq: null, exactReqText: null, branchText: null, branchReq: null, branchReqText: null, valueMeta: null, statsMeta: null, genTokens: [], lensCache: new Map(), lensSeq: 0, lensIdx: new Map(), lensReq: null, lensTokMap: null, lensTokReq: null };
+      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false, serverUrl: '', authorship: [], clipboardAuth: null, clipboardText: null, beforeInput: null, rolloutActive: false, rolloutAborted: false, modelName: null, jlensOn: false, valueOn: false, colorBy: 'stakes', valueIdx: new Map(), valueText: null, valueReq: null, valueReqText: null, exactText: null, exactReq: null, exactReqText: null, branchText: null, branchReq: null, branchReqText: null, valueMeta: null, statsMeta: null, dirMeta: null, dirLayer: null, dirName: null, dirLoaded: new Map(), dirReq: null, dirReqKey: null, genTokens: [], lensCache: new Map(), lensSeq: 0, lensIdx: new Map(), lensReq: null, lensTokMap: null, lensTokReq: null };
       const DEFAULT_COMPLETION_URL = 'http://localhost:8055/completion';
       const SERVER_URL_STORAGE_KEY = 'loomui:serverUrl';
       const newId = () => crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
@@ -633,6 +656,7 @@
         state.valueText = null;
         state.exactText = null;
         state.branchText = null;
+        state.dirLoaded.clear();
       };
       // ---- value view: per-token metrics, one of them (state.colorBy) tints the tokens ----
       // fast: probe readouts on layer 40 (llama-server --value-probe) + surprisal/entropy of the model's own
@@ -652,6 +676,7 @@
         { key: 'stakes_all', src: 'exact', ref: 'trend', label: 'stakes, all later tokens (exact)', fmt: x => Math.exp(x).toFixed(3) },
         { key: 'now_x', src: 'exact', ref: 'text', label: 'next-token dependence (exact)', fmt: x => Math.exp(x).toFixed(3) },
         { key: 'branch', src: 'branch', ref: 'textlog', label: 'branch impact (gradient, rough)', fmt: x => x.toFixed(2) + ' nats' },
+        { key: 'dir', src: 'dir', ref: 'dir', label: 'direction probe', fmt: x => x.toFixed(3) },
       ];
       const valueMetric = () => VALUE_METRICS.find(m => m.key === state.colorBy) || VALUE_METRICS[0];
       // inverse normal CDF (Acklam), to put percentiles on the z scale the colors use
@@ -671,8 +696,8 @@
         const meta = m.ref === 'probe' ? state.valueMeta : m.ref === 'stats' ? state.statsMeta : null;
         return meta && meta.stats && meta.stats[m.key];
       };
-      const fwPct = (m, v) => {
-        const st = fwStats(m);
+      const fwPct = (m, v) => pctOf(fwStats(m), v);
+      const pctOf = (st, v) => {
         if (!st || !st.pct) return null;
         const qs = Object.keys(st.pct).map(Number).sort((x, y) => x - y);
         if (v <= st.pct[String(qs[0])]) return 0.5;
@@ -683,9 +708,16 @@
         }
         return 99.5;
       };
-      const valueLoaded = (m, text) => (m.src === 'exact' ? state.exactText : m.src === 'branch' ? state.branchText : state.valueText) === text;
+      const valueLoaded = (m, text) => (m.src === 'exact' ? state.exactText : m.src === 'branch' ? state.branchText :
+        m.src === 'dir' ? state.dirLoaded.get(state.dirLayer) : state.valueText) === text;
       // z of metric m at entry e: fineweb percentile on the probit scale, or within this text for exact metrics
       const valueZOf = (m, e) => {
+        if (m.src === 'dir') {
+          const d = dirInfo(state.dirName), v = e && e['dir:' + state.dirName];
+          if (!d || v === undefined || v === null) return null;
+          const p = pctOf(d.cos_stats, v);
+          return p === null ? null : probit(p / 100);
+        }
         const v = e && e[m.key];
         if (v === undefined || v === null) return null;
         if (m.ref === 'trend') return e.z_all === undefined ? null : e.z_all;
@@ -708,6 +740,68 @@
         let e = state.valueIdx.get(i);
         if (!e) { e = {}; state.valueIdx.set(i, e); }
         return e;
+      };
+      // ---- direction probes: the layer sweep's regulated directions (llama-server --probe-dirs, metadata from
+      // /probe_dirs.json). Each token is tinted by u.h / |h| at the picked direction's layer, as a percentile of the
+      // same quantity over natural text (FineWeb rollouts); orange = high (+u), blue = low ----
+      const dirInfo = name => (state.dirMeta && name) ? state.dirMeta.byName[name] : null;
+      const dirsAt = L => state.dirMeta ? state.dirMeta.directions.filter(d => d.layer === L) : [];
+      const sgn = (x, k) => (x >= 0 ? '+' : '\u2212') + Math.abs(x).toFixed(k);
+      const dirStrength = d => d.side === 'pushback' ? 'undoes ' + Math.round(100 * d.heldout) + '%' : 'amplifies ' + Math.round(-100 * d.heldout) + '%';
+      const dirTitle = d => (d.side === 'pushback' ? 'pushed back ' : 'amplified ') + (d.rank + 1) + ': ' + d.family_label;
+      const dirToks = lst => lst.length ? lst.map(t => '<code>' + escapeHtml(t) + '</code>').join(' ') : '(no common tokens)';
+      // a stored context, '...text[[token]]', with the token in bold
+      const dirCtx = c => '<code>' + escapeHtml(c).replace(/\[\[([\s\S]*?)\]\]/, '<b>$1</b>') + '</code>';
+      const fillDirLayers = () => {
+        const sel = $('dirLayer');
+        sel.innerHTML = '';
+        for (const r of state.dirMeta.per_layer) {
+          const ds = dirsAt(r.layer);
+          const pb = ds.filter(d => d.side === 'pushback').map(d => d.heldout), am = ds.filter(d => d.side === 'amplify').map(d => d.heldout);
+          const parts = [];
+          if (pb.length) parts.push('back ' + Math.round(100 * Math.max(...pb)) + '%');
+          if (am.length) parts.push('amplified ' + Math.round(-100 * Math.min(...am)) + '%');
+          const o = document.createElement('option');
+          o.value = String(r.layer);
+          o.textContent = r.layer + ' \u00b7 ' + parts.join(', ') + (r.output_regime ? ' (output)' : '');
+          sel.appendChild(o);
+        }
+      };
+      const fillDirPick = () => {
+        const sel = $('dirPick');
+        sel.innerHTML = '';
+        for (const [side, title] of [['pushback', 'pushed back: writing undoes a push'], ['amplify', 'amplified: writing adds to a push']]) {
+          const ds = dirsAt(state.dirLayer).filter(d => d.side === side);
+          if (!ds.length) continue;
+          const g = document.createElement('optgroup');
+          g.label = title;
+          for (const d of ds) {
+            const o = document.createElement('option');
+            o.value = d.name;
+            o.textContent = (side === 'pushback' ? 'back ' : 'amp ') + (d.rank + 1) + ' \u00b7 ' + d.family_label + ' \u00b7 ' + dirStrength(d);
+            g.appendChild(o);
+          }
+          sel.appendChild(g);
+        }
+      };
+      const showDirInfo = () => {
+        const d = dirInfo(state.dirName), box = $('dirInfo');
+        if (!d) { box.innerHTML = ''; return; }
+        const lr = state.dirMeta.per_layer.find(r => r.layer === d.layer) || {};
+        let h = '<div><b>' + escapeHtml(dirTitle(d)) + '</b> (layer ' + d.layer + '). Writing ' +
+          (d.side === 'pushback' ? 'undoes ' + Math.round(100 * d.heldout) + '% of a push along it' : 'amplifies a push along it by ' + Math.round(-100 * d.heldout) + '%') +
+          ' (held-out \u03ba ' + sgn(d.heldout, 2) + '; in sample ' + sgn(d.kappa, 2) + ' \u00b1 ' + d.se.toFixed(2) + ', noise edge \u00b1' + (lr.edge || 0).toFixed(2) + ').</div>';
+        h += '<div>' + escapeHtml(d.reading) + '</div>';
+        h += '<div>Pushed toward +u, the model writes more ' + dirToks(d.more) + ' and less ' + dirToks(d.less) + '.</div>';
+        if (d.ctx_high && d.ctx_low) h += '<div>Highest at ' + dirCtx(d.ctx_high) + '; lowest at ' + dirCtx(d.ctx_low) + '.</div>';
+        h += '<div><span class="hi">orange = high</span>' + (d.high ? ' (' + escapeHtml(d.high) + ')' : '') + ', <span class="lo">blue = low</span>' +
+          (d.low ? ' (' + escapeHtml(d.low) + ')' : '') + ': u\u00b7h/|h| as a percentile of natural text (FineWeb rollouts).' +
+          (d.flipped ? ' Signs are set so each family keeps its colors across layers; this one is the writeup\u2019s \u2212u.' : '') + '</div>';
+        if (lr.output_regime) h += '<div>At the output layers (57\u201360) both sides read whether the current token ends a sentence or line: next-token dynamics rather than an internal variable.</div>';
+        box.innerHTML = h;
+      };
+      const saveDir = () => {
+        try { localStorage.setItem('loomDirLayer', String(state.dirLayer)); localStorage.setItem('loomDirName', state.dirName || ''); } catch (err) { /* storage unavailable */ }
       };
       // exact stakes grow with the number of later tokens, so stakes_all is colored by the residual from a
       // fit of log stakes_all on log(later predictions) over this text; now_x by its z within the text
@@ -821,6 +915,30 @@
         }).catch(err => { if (state.branchReq === p) state.branchReq = null; state.valueErr = String(err); return false; });
         return p;
       };
+      // direction probes at the picked layer (all of that layer's directions in one forward pass)
+      const requestValueDirs = (text, map) => {
+        const L = state.dirLayer;
+        if (L === null || L === undefined) return Promise.resolve(false);
+        if (state.dirLoaded.get(L) === text) return Promise.resolve(true);
+        const key = L + '\u0000' + text;
+        if (state.dirReq && state.dirReqKey === key) return state.dirReq;
+        state.dirReqKey = key;
+        const p = state.dirReq = valuePost({ content: text, dirs: true, dir_layers: [L], readouts_only: true }).then(data => {
+          if (state.dirReq === p) state.dirReq = null;
+          if (data && data.error) { state.valueErr = data.error.message || 'direction probe error'; renderHighlight(); return false; }
+          const dd = data && data.dirs;
+          if (!dd || data.n_tokens !== map.toks.length || $('pad').value !== text) return false;
+          dd.cos.forEach((vals, i) => {
+            const e = valueEntry(i);
+            dd.names.forEach((n, k) => { e['dir:' + n] = vals[k]; });
+          });
+          state.dirLoaded.set(L, text);
+          state.valueErr = null;
+          renderHighlight();
+          return true;
+        }).catch(err => { if (state.dirReq === p) state.dirReq = null; state.valueErr = String(err); return false; });
+        return p;
+      };
       const requestValueAll = () => {
         const text = $('pad').value;
         const map = state.lensTokMap;
@@ -828,6 +946,7 @@
         const jobs = [requestValueFast(text, map)];
         if (valueMetric().src === 'exact') jobs.push(requestValueExact(text, map));
         if (valueMetric().src === 'branch') jobs.push(requestValueBranch(text, map));
+        if (valueMetric().src === 'dir') jobs.push(requestValueDirs(text, map));
         return Promise.all(jobs).then(r => r.every(Boolean));
       };
       const valueHtml = i => {
@@ -837,9 +956,24 @@
         const sel = valueMetric();
         let html = '<div class="lt-val">';
         if (state.valueErr) html += '<div class="lt-err">' + escapeHtml(state.valueErr) + '</div>';
+        if (sel.src === 'dir' && state.dirLoaded.get(state.dirLayer) === text) {
+          // every direction at the picked layer: u.h / |h| and its natural-text percentile
+          html += '<div class="lt-note">layer ' + state.dirLayer + ' directions: u\u00b7h/|h| here</div>';
+          for (const d of dirsAt(state.dirLayer)) {
+            const v = e['dir:' + d.name];
+            if (v === undefined || v === null) continue;
+            const p = pctOf(d.cos_stats, v);
+            const ref = p === null ? '' : ' <span class="lt-note">(percentile ' + (p <= 0.5 ? '<1' : p >= 99.5 ? '>99' : '~' + Math.round(p)) + ')</span>';
+            const lab = escapeHtml(dirTitle(d)) + ' <span class="lt-note">(' + dirStrength(d) + ')</span>';
+            html += '<div>' + (d.name === state.dirName ? '<b>&#9656; ' + lab + '</b>' : lab) + ': <b>' + sgn(v, 3) + '</b>' + ref + '</div>';
+          }
+          const d = dirInfo(state.dirName);
+          if (d && d.high) html += '<div class="lt-note"><span class="lt-dir-hi">high</span>: ' + escapeHtml(d.high) + '; <span class="lt-dir-lo">low</span>: ' + escapeHtml(d.low) + '</div>';
+          html += '<div style="margin-bottom:4px"></div>';
+        }
         for (const m of VALUE_METRICS) {
           if (!valueLoaded(m, text)) {
-            if (m === sel) html += '<div class="lt-note">' + escapeHtml(m.label) + ': ' + (m.src !== 'fast' ? 'computing by backprop (several seconds)...' : '...') + '</div>';
+            if (m === sel) html += '<div class="lt-note">' + escapeHtml(m.src === 'dir' ? 'layer ' + state.dirLayer + ' directions' : m.label) + ': ' + (m.src === 'exact' || m.src === 'branch' ? 'computing by backprop (several seconds)...' : '...') + '</div>';
             continue;
           }
           const v = e[m.key];
@@ -1796,6 +1930,58 @@
         renderHighlight();
         if (state.valueOn) { const p = ensureLensTokens(); if (p) p.then(() => requestValueAll()); else requestValueAll(); }
       });
+      // picking a layer or direction tints by it: color menu -> direction probe, value view on
+      const selectDirColor = () => {
+        state.colorBy = 'dir';
+        $('valueColor').value = 'dir';
+        try { localStorage.setItem('loomValueColor', 'dir'); } catch (err) { /* storage unavailable */ }
+        state.valueErr = null;
+        if (!$('valueToggle').checked) { $('valueToggle').checked = true; $('valueToggle').dispatchEvent(new Event('change')); return; }
+        renderHighlight();
+        const p = ensureLensTokens(); if (p) p.then(() => requestValueAll()); else requestValueAll();
+      };
+      $('dirLayer').addEventListener('change', e => {
+        state.dirLayer = Number(e.target.value);
+        fillDirPick();
+        state.dirName = $('dirPick').value || null;
+        saveDir();
+        showDirInfo();
+        selectDirColor();
+      });
+      $('dirPick').addEventListener('change', e => {
+        state.dirName = e.target.value || null;
+        saveDir();
+        showDirInfo();
+        selectDirColor();
+      });
+      // direction metadata from the loom server (optional; the section stays hidden without it)
+      (async () => {
+        try {
+          const r = await fetch('/probe_dirs.json');
+          if (!r.ok) throw new Error(String(r.status));
+          const m = await r.json();
+          m.byName = {};
+          m.directions.forEach(d => { m.byName[d.name] = d; });
+          state.dirMeta = m;
+        } catch (err) {
+          const o = $('valueColor').querySelector('option[value="dir"]');
+          if (o) o.disabled = true;
+          return;
+        }
+        $('dirSection').hidden = false;
+        fillDirLayers();
+        let L = null, name = null;
+        try { L = Number(localStorage.getItem('loomDirLayer')); name = localStorage.getItem('loomDirName'); } catch (err) { /* storage unavailable */ }
+        const layers = state.dirMeta.per_layer.map(r => r.layer);
+        if (!layers.includes(L)) L = layers.includes(40) ? 40 : layers[0];
+        state.dirLayer = L;
+        $('dirLayer').value = String(L);
+        fillDirPick();
+        if (name && dirInfo(name) && dirInfo(name).layer === L) $('dirPick').value = name;
+        state.dirName = $('dirPick').value || null;
+        showDirInfo();
+        if (state.valueOn && state.colorBy === 'dir') { renderHighlight(); const p = ensureLensTokens(); if (p) p.then(() => requestValueAll()); else requestValueAll(); }
+      })();
       // browsers may restore the checkbox across a refresh without firing
       // 'change'; sync JS state with whatever the box actually shows
       {

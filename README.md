@@ -94,3 +94,29 @@ Colors for the probe and output-distribution metrics are the token's fineweb per
 the latter; the output-distribution numbers come from 64 random 1,024-token fineweb windows). The exact
 metrics have no fineweb reference: stakes is a z-score against the trend with the number of later tokens in
 this text, the next-token dependence a z-score within the text.
+
+### Direction probes
+
+With `--probe-dirs PATH` as well (`PATH.f32` + `PATH.json` from `homeo/score_probe_export.py` in
+base-model-welfare), the settings get a **Direction probes** section: the directions of the layer sweep that writing
+regulates, at every layer where they clear the noise (183 directions at layers 27-60). Pick a layer, then a
+direction. The layer menu shows the strongest effects at each layer. The direction menu lists them by side:
+
+- **pushed back**: writing undoes part of a push along the direction (held-out kappa > 0, "undoes 14%");
+- **amplified**: writing adds to it (kappa < 0, "amplifies 20%").
+
+Picking one turns on the value view with color = direction probe. Each token is tinted by u.h / |h| at that layer
+(orange = high, blue = low), as a percentile of the same quantity over the natural-text capture (192,000 positions of
+FineWeb rollouts). Under the menus is what the direction is: its family, what it tracks in ordinary text, what the
+model writes when pushed along it, and its most extreme contexts. Hovering a token shows every direction at the
+picked layer. Signs are set so each family keeps its colors across layers: orange is deeper into the sentence, a
+proper name, chattier text, more structured text, a break, or a less predictable next token.
+
+One `POST /jlens` with `dirs: true, dir_layers: [L], readouts_only: true` per layer and text (about 2.7 s for 2,900
+tokens). `loom_server.py` serves the metadata at `/probe_dirs.json` (env `LOOM_PROBE_DIRS`, default
+`/mnt/models/homeo/score/probe_dirs.json`).
+
+    llama-server -m GLM-4-32B-Base-32K.i1-Q4_K_S.gguf -ngl 99 -ot token_embd.weight=CUDA0 \
+      --jlens /mnt/models/jlens/rlens_rollout_mixed.jlns \
+      --value-probe /mnt/models/homeo/value_probe/readout_L40 \
+      --probe-dirs /mnt/models/homeo/score/probe_dirs

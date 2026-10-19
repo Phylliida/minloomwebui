@@ -297,6 +297,18 @@ def value_readout():
     return send_from_directory(VALUE_READOUT.parent, VALUE_READOUT.name, mimetype="application/json")
 
 
+# direction probes (the layer sweep's regulated directions): names, strengths, readings and color scales; the
+# directions themselves are loaded by llama-server --probe-dirs
+PROBE_DIRS = Path(os.environ.get("LOOM_PROBE_DIRS", "/mnt/models/homeo/score/probe_dirs.json"))
+
+
+@app.route("/probe_dirs.json")
+def probe_dirs():
+    if not PROBE_DIRS.is_file():
+        return jsonify({"error": f"{PROBE_DIRS} not found (set LOOM_PROBE_DIRS)"}), 404
+    return send_from_directory(PROBE_DIRS.parent, PROBE_DIRS.name, mimetype="application/json")
+
+
 @app.route("/history", methods=["GET", "POST"])
 def history():
     if request.method == "POST":
