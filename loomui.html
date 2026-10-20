@@ -431,6 +431,11 @@
           <option value="branches">branchiness, log(1 / sum p^2)</option>
           <option value="runner_up">runner-up ratio (p2 / p1)</option>
         </optgroup>
+        <optgroup label="actual difficulty of what follows">
+          <option value="surp8">actual surprisal, next 8</option>
+          <option value="surp32">actual surprisal, next 32</option>
+          <option value="surp_all">actual surprisal, all later tokens</option>
+        </optgroup>
         <optgroup label="backprop over the text (slow)">
           <option value="stakes_all">stakes, all later tokens (exact)</option>
           <option value="now_x">next-token dependence (exact)</option>
@@ -691,6 +696,11 @@
         { key: 'entropy32', src: 'fast', ref: 'stats', label: 'mean entropy over the next 32 tokens', fmt: x => x.toFixed(2) + ' nats' },
         { key: 'branches', src: 'fast', ref: 'stats', label: 'branchiness, log(1 / sum p^2)', fmt: x => Math.log(x).toFixed(2) + ' nats (~' + x.toFixed(1) + ' strong candidates)' },
         { key: 'runner_up', src: 'fast', ref: 'stats', label: 'runner-up ratio (p2 / p1)', fmt: x => x.toFixed(2) },
+        // the realized difficulty of the text after a token: mean surprisal of the tokens after the next one (the target the
+        // forecast probes predict, so forecast and actual can be compared); empty without the full horizon
+        { key: 'surp8', src: 'fast', ref: 'stats', label: 'actual surprisal, next 8 (after the next token)', fmt: x => x.toFixed(2) + ' nats' },
+        { key: 'surp32', src: 'fast', ref: 'stats', label: 'actual surprisal, next 32 (after the next token)', fmt: x => x.toFixed(2) + ' nats' },
+        { key: 'surp_all', src: 'fast', ref: 'textz', label: 'actual surprisal, all later tokens (after the next)', fmt: x => x.toFixed(2) + ' nats' },
         { key: 'stakes_all', src: 'exact', ref: 'trend', label: 'stakes, all later tokens (exact)', fmt: x => Math.exp(x).toFixed(3) },
         { key: 'now_x', src: 'exact', ref: 'text', label: 'next-token dependence (exact)', fmt: x => Math.exp(x).toFixed(3) },
         { key: 'branch', src: 'branch', ref: 'textlog', label: 'branch impact (gradient, rough)', fmt: x => x.toFixed(2) + ' nats' },
@@ -741,6 +751,7 @@
         if (m.ref === 'trend') return e.z_all === undefined ? null : e.z_all;
         if (m.ref === 'text') return e.z_nowx === undefined ? null : e.z_nowx;
         if (m.ref === 'textlog') return e.z_branch === undefined ? null : e.z_branch;
+        if (m.ref === 'textz') return e.z_surpall === undefined ? null : e.z_surpall;
         const p = fwPct(m, v);
         return p === null ? null : probit(p / 100);
       };
@@ -1033,6 +1044,29 @@
             for (let t = i + 1; t <= Math.min(n - 1, i + 32); ++t) { const h = state.valueIdx.get(t).entropy; if (h !== undefined && h !== null) { s += h; ++c; } }
             e.entropy32 = c > 0 ? s / c : null;
           }
+          // actual difficulty of what follows token i: mean surprisal of tokens i+2 ..., i.e. surprisal[i+1 ..] (surprisal[t]
+          // is -log p of token t+1; the last position has none). Prefix sums over the finite values.
+          const cs = [0], cn = [0];
+          for (let t = 0; t < n; ++t) {
+            const v = state.valueIdx.get(t).surprisal, ok = v !== undefined && v !== null && Number.isFinite(v);
+            cs.push(cs[t] + (ok ? v : 0)); cn.push(cn[t] + (ok ? 1 : 0));
+          }
+          const mean = (a, b) => (b > a && cn[b] - cn[a] === b - a) ? (cs[b] - cs[a]) / (b - a) : null; // tokens a..b-1, all finite
+          const zs = [];
+          for (let i = 0; i < n; ++i) {
+            const e = valueEntry(i);
+            e.surp8 = i + 9 <= n ? mean(i + 1, i + 9) : null;
+            e.surp32 = i + 33 <= n ? mean(i + 1, i + 33) : null;
+            const last = n - 1; // surprisal is defined for positions 0 .. n-2
+            e.surp_all = last - (i + 1) >= 8 ? (cs[last] - cs[i + 1]) / Math.max(1, cn[last] - cn[i + 1]) : null;
+            delete e.z_surpall;
+            if (e.surp_all !== null) zs.push(e);
+          }
+          if (zs.length >= 3) {
+            const mu = zs.reduce((t, e) => t + e.surp_all, 0) / zs.length;
+            const sd = Math.sqrt(zs.reduce((t, e) => t + (e.surp_all - mu) * (e.surp_all - mu), 0) / zs.length) || 1;
+            zs.forEach(e => { e.z_surpall = (e.surp_all - mu) / sd; });
+          }
           state.valueText = text;
           state.valueErr = null;
           renderHighlight();
@@ -1163,6 +1197,7 @@
           else if (m.key === 'stakes_all' && e.z_all !== undefined) ref = (state.lensTokMap ? state.lensTokMap.toks.length - 2 - i : '?') + ' later tokens; z ' + (e.z_all >= 0 ? '+' : '') + e.z_all.toFixed(2) + ' vs. tokens with as many later tokens in this text';
           else if (m.key === 'now_x' && e.z_nowx !== undefined) ref = 'z ' + (e.z_nowx >= 0 ? '+' : '') + e.z_nowx.toFixed(2) + ' within this text';
           else if (m.key === 'branch' && e.z_branch !== undefined) ref = 'z ' + (e.z_branch >= 0 ? '+' : '') + e.z_branch.toFixed(2) + ' (log) within this text';
+          else if (m.key === 'surp_all' && e.z_surpall !== undefined) ref = (state.lensTokMap ? state.lensTokMap.toks.length - 2 - i : '?') + ' later tokens; z ' + (e.z_surpall >= 0 ? '+' : '') + e.z_surpall.toFixed(2) + ' within this text';
           const label = m === sel ? '<b>&#9656; ' + escapeHtml(m.label) + '</b>' : escapeHtml(m.label);
           html += '<div>' + label + ': <b>' + m.fmt(v) + '</b>' + (ref ? ' <span class="lt-note">(' + ref + ')</span>' : '') + '</div>';
         }

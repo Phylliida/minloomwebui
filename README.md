@@ -85,6 +85,12 @@ shows all of them. Choices:
   entropy in nats; exp of it is about the number of strong candidates, and unlike entropy it ignores a long
   tail of tiny ones) and the runner-up
   ratio (p2 / p1: 1 = a coin flip between the top two, near 0 = no fork).
+- **actual difficulty of what follows** (from the same output distribution): the mean surprisal of the 8 or 32
+  tokens after the next one, i.e. how hard the text that actually follows was. It is the quantity the forecast
+  probes predict, so hovering shows forecast and actual side by side. Colors are fineweb percentiles
+  (`homeo/token_stats_difficulty.py` adds them to the stats file); tokens without the full horizon stay
+  uncolored. A third option averages over all later tokens and is colored within the text, since its horizon
+  varies.
 - **exact (backprop, slow)**: stakes for all later tokens in the pad, and the next-token dependence, by
   backprop over the whole text (`value_exact: true` on `/jlens`; needs the homeostasis build of
   llama-server). Requested only while one of them is selected: about 15 s for 2,048 tokens.
