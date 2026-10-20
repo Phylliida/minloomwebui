@@ -110,7 +110,9 @@ Picking one turns on the value view with color = direction probe. Each token is 
 FineWeb rollouts). Under the menus is what the direction is: its family, what it tracks in ordinary text, what the
 model writes when pushed along it, and its most extreme contexts. Hovering a token shows every direction at the
 picked layer. Signs are set so each family keeps its colors across layers: orange is deeper into the sentence, a
-proper name, chattier text, more structured text, a break, or a less predictable next token.
+proper name, chattier text, more structured text, a break, or a less predictable next token. The **flip sign**
+button next to the direction menu negates the picked direction (remembered per direction): colors, hover values and
+percentiles invert, and the description (reading, effectors, contexts) switches to the other pole.
 
 One `POST /jlens` with `dirs: true, dir_layers: [L], readouts_only: true` per layer and text (about 2.7 s for 2,900
 tokens). `loom_server.py` serves the metadata at `/probe_dirs.json` (env `LOOM_PROBE_DIRS`, default

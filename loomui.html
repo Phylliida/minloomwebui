@@ -253,7 +253,10 @@
     .param.prefix input { width: 180px; }
     .param.postfix input { width: 180px; }
     .param.url input { width: 260px; }
-    .param.dir-pick { flex: 1 1 100%; }
+    .dir-pick-row { flex: 1 1 100%; display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .param.dir-pick { flex: 1 1 auto; min-width: 0; }
+    .dir-flip { padding: 5px 10px; font-size: 12px; white-space: nowrap; }
+    .dir-flip[aria-pressed="true"] { border-color: rgb(251, 146, 60); color: rgb(251, 146, 60); }
     .param.dir-pick select { flex: 1; min-width: 0; }
     .dir-info { color: var(--btn-ink); font-size: 11px; line-height: 1.45; margin-top: 6px; opacity: 0.85; }
     .dir-info > div { margin-bottom: 3px; }
@@ -433,7 +436,10 @@
       </div>
       <div class="settings-row">
         <label class="param" title="layers where the layer sweep found directions that clear the noise; the percentages are the strongest held-out effects at that layer">layer <select id="dirLayer"></select></label>
-        <label class="param dir-pick" title="pushed back: writing undoes part of a push along it (held-out kappa > 0); amplified: writing adds to it (kappa < 0). The percentage is the held-out kappa">direction <select id="dirPick"></select></label>
+        <div class="dir-pick-row">
+          <label class="param dir-pick" title="pushed back: writing undoes part of a push along it (held-out kappa > 0); amplified: writing adds to it (kappa < 0). The percentage is the held-out kappa">direction <select id="dirPick"></select></label>
+          <button id="dirFlip" type="button" class="dir-flip" aria-pressed="false" title="flip this direction's sign: swaps orange and blue (remembered per direction)">flip sign</button>
+        </div>
       </div>
       <div id="dirInfo" class="dir-info"></div>
     </div>
@@ -492,7 +498,7 @@
   <script>
     (() => {
       const $ = id => document.getElementById(id);
-      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false, serverUrl: '', authorship: [], clipboardAuth: null, clipboardText: null, beforeInput: null, rolloutActive: false, rolloutAborted: false, modelName: null, jlensOn: false, valueOn: false, colorBy: 'stakes', valueIdx: new Map(), valueText: null, valueReq: null, valueReqText: null, exactText: null, exactReq: null, exactReqText: null, branchText: null, branchReq: null, branchReqText: null, valueMeta: null, statsMeta: null, dirMeta: null, dirLayer: null, dirName: null, dirLoaded: new Map(), dirReq: null, dirReqKey: null, genTokens: [], lensCache: new Map(), lensSeq: 0, lensIdx: new Map(), lensReq: null, lensTokMap: null, lensTokReq: null };
+      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false, serverUrl: '', authorship: [], clipboardAuth: null, clipboardText: null, beforeInput: null, rolloutActive: false, rolloutAborted: false, modelName: null, jlensOn: false, valueOn: false, colorBy: 'stakes', valueIdx: new Map(), valueText: null, valueReq: null, valueReqText: null, exactText: null, exactReq: null, exactReqText: null, branchText: null, branchReq: null, branchReqText: null, valueMeta: null, statsMeta: null, dirMeta: null, dirLayer: null, dirName: null, dirLoaded: new Map(), dirFlips: new Set(), dirReq: null, dirReqKey: null, genTokens: [], lensCache: new Map(), lensSeq: 0, lensIdx: new Map(), lensReq: null, lensTokMap: null, lensTokReq: null };
       const DEFAULT_COMPLETION_URL = 'http://localhost:8055/completion';
       const SERVER_URL_STORAGE_KEY = 'loomui:serverUrl';
       const newId = () => crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
@@ -716,7 +722,7 @@
           const d = dirInfo(state.dirName), v = e && e['dir:' + state.dirName];
           if (!d || v === undefined || v === null) return null;
           const p = pctOf(d.cos_stats, v);
-          return p === null ? null : probit(p / 100);
+          return p === null ? null : dirSign(d.name) * probit(p / 100);
         }
         const v = e && e[m.key];
         if (v === undefined || v === null) return null;
@@ -749,6 +755,16 @@
       const sgn = (x, k) => (x >= 0 ? '+' : '\u2212') + Math.abs(x).toFixed(k);
       const dirStrength = d => d.side === 'pushback' ? 'undoes ' + Math.round(100 * d.heldout) + '%' : 'amplifies ' + Math.round(-100 * d.heldout) + '%';
       const dirTitle = d => (d.side === 'pushback' ? 'pushed back ' : 'amplified ') + (d.rank + 1) + ': ' + d.family_label;
+      // the flip button negates a direction (remembered per direction): its colors, values, poles, effects and contexts swap
+      const dirSign = name => state.dirFlips.has(name) ? -1 : 1;
+      const dirView = d => state.dirFlips.has(d.name)
+        ? { reading: d.reading_neg || d.reading, high: d.low, low: d.high, more: d.less, less: d.more, ctx_high: d.ctx_low, ctx_low: d.ctx_high, doc_neg: !d.flipped }
+        : { reading: d.reading, high: d.high, low: d.low, more: d.more, less: d.less, ctx_high: d.ctx_high, ctx_low: d.ctx_low, doc_neg: d.flipped };
+      const syncDirFlip = () => {
+        const on = !!state.dirName && state.dirFlips.has(state.dirName), b = $('dirFlip');
+        b.setAttribute('aria-pressed', String(on));
+        b.textContent = on ? 'flipped' : 'flip sign';
+      };
       const dirToks = lst => lst.length ? lst.map(t => '<code>' + escapeHtml(t) + '</code>').join(' ') : '(no common tokens)';
       // a stored context, '...text[[token]]', with the token in bold
       const dirCtx = c => '<code>' + escapeHtml(c).replace(/\[\[([\s\S]*?)\]\]/, '<b>$1</b>') + '</code>';
@@ -778,25 +794,28 @@
           for (const d of ds) {
             const o = document.createElement('option');
             o.value = d.name;
-            o.textContent = (side === 'pushback' ? 'back ' : 'amp ') + (d.rank + 1) + ' \u00b7 ' + d.family_label + ' \u00b7 ' + dirStrength(d);
+            o.textContent = (side === 'pushback' ? 'back ' : 'amp ') + (d.rank + 1) + ' \u00b7 ' + d.family_label + ' \u00b7 ' + dirStrength(d) + (state.dirFlips.has(d.name) ? ' (flipped)' : '');
             g.appendChild(o);
           }
           sel.appendChild(g);
         }
       };
       const showDirInfo = () => {
+        syncDirFlip();
         const d = dirInfo(state.dirName), box = $('dirInfo');
         if (!d) { box.innerHTML = ''; return; }
         const lr = state.dirMeta.per_layer.find(r => r.layer === d.layer) || {};
-        let h = '<div><b>' + escapeHtml(dirTitle(d)) + '</b> (layer ' + d.layer + '). Writing ' +
+        const w = dirView(d), userFlip = state.dirFlips.has(d.name);
+        let h = '<div><b>' + escapeHtml(dirTitle(d)) + '</b> (layer ' + d.layer + (userFlip ? ', sign flipped' : '') + '). Writing ' +
           (d.side === 'pushback' ? 'undoes ' + Math.round(100 * d.heldout) + '% of a push along it' : 'amplifies a push along it by ' + Math.round(-100 * d.heldout) + '%') +
           ' (held-out \u03ba ' + sgn(d.heldout, 2) + '; in sample ' + sgn(d.kappa, 2) + ' \u00b1 ' + d.se.toFixed(2) + ', noise edge \u00b1' + (lr.edge || 0).toFixed(2) + ').</div>';
-        h += '<div>' + escapeHtml(d.reading) + '</div>';
-        h += '<div>Pushed toward +u, the model writes more ' + dirToks(d.more) + ' and less ' + dirToks(d.less) + '.</div>';
-        if (d.ctx_high && d.ctx_low) h += '<div>Highest at ' + dirCtx(d.ctx_high) + '; lowest at ' + dirCtx(d.ctx_low) + '.</div>';
-        h += '<div><span class="hi">orange = high</span>' + (d.high ? ' (' + escapeHtml(d.high) + ')' : '') + ', <span class="lo">blue = low</span>' +
-          (d.low ? ' (' + escapeHtml(d.low) + ')' : '') + ': u\u00b7h/|h| as a percentile of natural text (FineWeb rollouts).' +
-          (d.flipped ? ' Signs are set so each family keeps its colors across layers; this one is the writeup\u2019s \u2212u.' : '') + '</div>';
+        h += '<div>' + escapeHtml(w.reading) + '</div>';
+        h += '<div>Pushed toward orange, the model writes more ' + dirToks(w.more) + ' and less ' + dirToks(w.less) + '.</div>';
+        if (w.ctx_high && w.ctx_low) h += '<div>Most orange at ' + dirCtx(w.ctx_high) + '; most blue at ' + dirCtx(w.ctx_low) + '.</div>';
+        h += '<div><span class="hi">orange = high</span>' + (w.high ? ' (' + escapeHtml(w.high) + ')' : '') + ', <span class="lo">blue = low</span>' +
+          (w.low ? ' (' + escapeHtml(w.low) + ')' : '') + ': u\u00b7h/|h| as a percentile of natural text (FineWeb rollouts).' +
+          (userFlip ? ' Flipped with the button; orange is the writeup\u2019s ' + (w.doc_neg ? '\u2212u.' : '+u.')
+            : d.flipped ? ' Signs are set so each family keeps its colors across layers; orange here is the writeup\u2019s \u2212u.' : '') + '</div>';
         if (lr.output_regime) h += '<div>At the output layers (57\u201360) both sides read whether the current token ends a sentence or line: next-token dynamics rather than an internal variable.</div>';
         box.innerHTML = h;
       };
@@ -960,15 +979,16 @@
           // every direction at the picked layer: u.h / |h| and its natural-text percentile
           html += '<div class="lt-note">layer ' + state.dirLayer + ' directions: u\u00b7h/|h| here</div>';
           for (const d of dirsAt(state.dirLayer)) {
-            const v = e['dir:' + d.name];
-            if (v === undefined || v === null) continue;
-            const p = pctOf(d.cos_stats, v);
+            const raw = e['dir:' + d.name];
+            if (raw === undefined || raw === null) continue;
+            // values and percentiles as shown, i.e. with the direction's sign flip applied
+            const s = dirSign(d.name), v = s * raw, p0 = pctOf(d.cos_stats, raw), p = p0 === null ? null : s > 0 ? p0 : 100 - p0;
             const ref = p === null ? '' : ' <span class="lt-note">(percentile ' + (p <= 0.5 ? '<1' : p >= 99.5 ? '>99' : '~' + Math.round(p)) + ')</span>';
-            const lab = escapeHtml(dirTitle(d)) + ' <span class="lt-note">(' + dirStrength(d) + ')</span>';
+            const lab = escapeHtml(dirTitle(d)) + ' <span class="lt-note">(' + dirStrength(d) + (s < 0 ? ', flipped' : '') + ')</span>';
             html += '<div>' + (d.name === state.dirName ? '<b>&#9656; ' + lab + '</b>' : lab) + ': <b>' + sgn(v, 3) + '</b>' + ref + '</div>';
           }
-          const d = dirInfo(state.dirName);
-          if (d && d.high) html += '<div class="lt-note"><span class="lt-dir-hi">high</span>: ' + escapeHtml(d.high) + '; <span class="lt-dir-lo">low</span>: ' + escapeHtml(d.low) + '</div>';
+          const d = dirInfo(state.dirName), w = d && dirView(d);
+          if (w && w.high) html += '<div class="lt-note"><span class="lt-dir-hi">high</span>: ' + escapeHtml(w.high) + '; <span class="lt-dir-lo">low</span>: ' + escapeHtml(w.low) + '</div>';
           html += '<div style="margin-bottom:4px"></div>';
         }
         for (const m of VALUE_METRICS) {
@@ -1948,6 +1968,16 @@
         showDirInfo();
         selectDirColor();
       });
+      $('dirFlip').addEventListener('click', () => {
+        const n = state.dirName;
+        if (!n) return;
+        if (state.dirFlips.has(n)) state.dirFlips.delete(n); else state.dirFlips.add(n);
+        try { localStorage.setItem('loomDirFlips', JSON.stringify([...state.dirFlips])); } catch (err) { /* storage unavailable */ }
+        fillDirPick();
+        $('dirPick').value = n;
+        showDirInfo();
+        selectDirColor();
+      });
       $('dirPick').addEventListener('change', e => {
         state.dirName = e.target.value || null;
         saveDir();
@@ -1969,6 +1999,7 @@
           return;
         }
         $('dirSection').hidden = false;
+        try { (JSON.parse(localStorage.getItem('loomDirFlips') || '[]') || []).forEach(n => { if (state.dirMeta.byName[n]) state.dirFlips.add(n); }); } catch (err) { /* storage unavailable */ }
         fillDirLayers();
         let L = null, name = null;
         try { L = Number(localStorage.getItem('loomDirLayer')); name = localStorage.getItem('loomDirName'); } catch (err) { /* storage unavailable */ }
