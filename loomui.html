@@ -420,8 +420,8 @@
         <optgroup label="probe on layer 40">
           <option value="stakes">stakes (next 32)</option>
           <option value="now">next-token dependence</option>
-          <option value="next8">forecast surprisal, next 8</option>
-          <option value="next32">forecast surprisal, next 32</option>
+          <option value="next8">forecast difficulty, next 8</option>
+          <option value="next32">forecast difficulty, next 32</option>
         </optgroup>
         <optgroup label="output distribution">
           <option value="surprisal">surprisal</option>
@@ -431,10 +431,12 @@
           <option value="branches">branchiness, log(1 / sum p^2)</option>
           <option value="runner_up">runner-up ratio (p2 / p1)</option>
         </optgroup>
-        <optgroup label="actual difficulty of what follows">
-          <option value="surp8">actual surprisal, next 8</option>
-          <option value="surp32">actual surprisal, next 32</option>
-          <option value="surp_all">actual surprisal, all later tokens</option>
+        <optgroup label="difficulty of what follows (mean surprisal)">
+          <option value="surp_all">difficulty, all later tokens</option>
+          <option value="surp128">difficulty, next 128</option>
+          <option value="surp64">difficulty, next 64</option>
+          <option value="surp32">difficulty, next 32</option>
+          <option value="surp8">difficulty, next 8</option>
         </optgroup>
         <optgroup label="backprop over the text (slow)">
           <option value="stakes_all">stakes, all later tokens (exact)</option>
@@ -688,19 +690,21 @@
       const VALUE_METRICS = [
         { key: 'stakes', src: 'fast', ref: 'probe', label: 'stakes, next 32 tokens (probe)', fmt: x => Math.exp(x).toFixed(3) },
         { key: 'now', src: 'fast', ref: 'probe', label: 'next-token dependence (probe)', fmt: x => Math.exp(x).toFixed(3) },
-        { key: 'next8', src: 'fast', ref: 'probe', label: 'forecast surprisal, next 8 (probe)', fmt: x => x.toFixed(2) + ' nats' },
-        { key: 'next32', src: 'fast', ref: 'probe', label: 'forecast surprisal, next 32 (probe)', fmt: x => x.toFixed(2) + ' nats' },
+        { key: 'next8', src: 'fast', ref: 'probe', label: 'forecast difficulty, next 8 (probe)', fmt: x => x.toFixed(2) + ' nats' },
+        { key: 'next32', src: 'fast', ref: 'probe', label: 'forecast difficulty, next 32 (probe)', fmt: x => x.toFixed(2) + ' nats' },
         { key: 'surprisal', src: 'fast', ref: 'stats', label: 'surprisal of the next token', fmt: x => x.toFixed(2) + ' nats' },
         { key: 'entropy', src: 'fast', ref: 'stats', label: 'entropy of the next-token distribution', fmt: x => x.toFixed(2) + ' nats' },
         { key: 'gap', src: 'fast', ref: 'stats', label: 'surprise gap (surprisal - entropy)', fmt: x => (x >= 0 ? '+' : '') + x.toFixed(2) + ' nats' },
         { key: 'entropy32', src: 'fast', ref: 'stats', label: 'mean entropy over the next 32 tokens', fmt: x => x.toFixed(2) + ' nats' },
         { key: 'branches', src: 'fast', ref: 'stats', label: 'branchiness, log(1 / sum p^2)', fmt: x => Math.log(x).toFixed(2) + ' nats (~' + x.toFixed(1) + ' strong candidates)' },
         { key: 'runner_up', src: 'fast', ref: 'stats', label: 'runner-up ratio (p2 / p1)', fmt: x => x.toFixed(2) },
-        // the realized difficulty of the text after a token: mean surprisal of the tokens after the next one (the target the
+        // difficulty of the text after a token: mean surprisal of the tokens after the next one (the target the
         // forecast probes predict, so forecast and actual can be compared); empty without the full horizon
-        { key: 'surp8', src: 'fast', ref: 'stats', label: 'actual surprisal, next 8 (after the next token)', fmt: x => x.toFixed(2) + ' nats' },
-        { key: 'surp32', src: 'fast', ref: 'stats', label: 'actual surprisal, next 32 (after the next token)', fmt: x => x.toFixed(2) + ' nats' },
-        { key: 'surp_all', src: 'fast', ref: 'textz', label: 'actual surprisal, all later tokens (after the next)', fmt: x => x.toFixed(2) + ' nats' },
+        { key: 'surp_all', src: 'fast', ref: 'textz', label: 'difficulty, all later tokens (after the next)', fmt: x => x.toFixed(2) + ' nats' },
+        { key: 'surp128', src: 'fast', ref: 'stats', label: 'difficulty, next 128 (after the next token)', fmt: x => x.toFixed(2) + ' nats' },
+        { key: 'surp64', src: 'fast', ref: 'stats', label: 'difficulty, next 64 (after the next token)', fmt: x => x.toFixed(2) + ' nats' },
+        { key: 'surp32', src: 'fast', ref: 'stats', label: 'difficulty, next 32 (after the next token)', fmt: x => x.toFixed(2) + ' nats' },
+        { key: 'surp8', src: 'fast', ref: 'stats', label: 'difficulty, next 8 (after the next token)', fmt: x => x.toFixed(2) + ' nats' },
         { key: 'stakes_all', src: 'exact', ref: 'trend', label: 'stakes, all later tokens (exact)', fmt: x => Math.exp(x).toFixed(3) },
         { key: 'now_x', src: 'exact', ref: 'text', label: 'next-token dependence (exact)', fmt: x => Math.exp(x).toFixed(3) },
         { key: 'branch', src: 'branch', ref: 'textlog', label: 'branch impact (gradient, rough)', fmt: x => x.toFixed(2) + ' nats' },
@@ -1044,7 +1048,7 @@
             for (let t = i + 1; t <= Math.min(n - 1, i + 32); ++t) { const h = state.valueIdx.get(t).entropy; if (h !== undefined && h !== null) { s += h; ++c; } }
             e.entropy32 = c > 0 ? s / c : null;
           }
-          // actual difficulty of what follows token i: mean surprisal of tokens i+2 ..., i.e. surprisal[i+1 ..] (surprisal[t]
+          // difficulty of what follows token i: mean surprisal of tokens i+2 ..., i.e. surprisal[i+1 ..] (surprisal[t]
           // is -log p of token t+1; the last position has none). Prefix sums over the finite values.
           const cs = [0], cn = [0];
           for (let t = 0; t < n; ++t) {
@@ -1057,6 +1061,8 @@
             const e = valueEntry(i);
             e.surp8 = i + 9 <= n ? mean(i + 1, i + 9) : null;
             e.surp32 = i + 33 <= n ? mean(i + 1, i + 33) : null;
+            e.surp64 = i + 65 <= n ? mean(i + 1, i + 65) : null;
+            e.surp128 = i + 129 <= n ? mean(i + 1, i + 129) : null;
             const last = n - 1; // surprisal is defined for positions 0 .. n-2
             e.surp_all = last - (i + 1) >= 8 ? (cs[last] - cs[i + 1]) / Math.max(1, cn[last] - cn[i + 1]) : null;
             delete e.z_surpall;

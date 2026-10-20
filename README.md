@@ -76,8 +76,8 @@ JLNS format and goes in the same `--jlens` slot.
 The `color` menu next to `value` picks which metric tints the tokens (orange = high, blue = low); hovering
 shows all of them. Choices:
 
-- **probe on layer 40**: stakes (next 32 tokens), next-token dependence, forecast surprisal of the next 8
-  and next 32 tokens (the linear probes above).
+- **probe on layer 40**: stakes (next 32 tokens), next-token dependence, forecast difficulty (mean surprisal) of the
+  next 8 and next 32 tokens (the linear probes above).
 - **output distribution** (from the model's own next-token distribution, `token_stats: true` on `/jlens`):
   surprisal of the actual next token, entropy (the model's own expected surprisal), the surprise gap
   (surprisal - entropy: where the model misjudged its difficulty), the mean entropy over the next 32
@@ -85,12 +85,11 @@ shows all of them. Choices:
   entropy in nats; exp of it is about the number of strong candidates, and unlike entropy it ignores a long
   tail of tiny ones) and the runner-up
   ratio (p2 / p1: 1 = a coin flip between the top two, near 0 = no fork).
-- **actual difficulty of what follows** (from the same output distribution): the mean surprisal of the 8 or 32
-  tokens after the next one, i.e. how hard the text that actually follows was. It is the quantity the forecast
-  probes predict, so hovering shows forecast and actual side by side. Colors are fineweb percentiles
-  (`homeo/token_stats_difficulty.py` adds them to the stats file); tokens without the full horizon stay
-  uncolored. A third option averages over all later tokens and is colored within the text, since its horizon
-  varies.
+- **difficulty of what follows**: the mean surprisal of the tokens after the next one, over all later tokens in the
+  pad (colored within the text, since the horizon varies) or over the next 128, 64, 32 or 8 (colored by fineweb
+  percentile; `homeo/token_stats_difficulty.py` adds the references to the stats file). Tokens without the full
+  horizon stay uncolored. Difficulty over the next 8 and 32 is what the forecast probes predict ("forecast
+  difficulty"), so hovering shows forecast and actual side by side.
 - **exact (backprop, slow)**: stakes for all later tokens in the pad, and the next-token dependence, by
   backprop over the whole text (`value_exact: true` on `/jlens`; needs the homeostasis build of
   llama-server). Requested only while one of them is selected: about 15 s for 2,048 tokens.
