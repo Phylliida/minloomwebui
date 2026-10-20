@@ -265,6 +265,18 @@
     .dir-info .hi { color: rgb(251, 146, 60); }
     .dir-info .lo { color: rgb(96, 165, 250); }
     #lensTip .lt-dir-hi, #lensPanelBody .lt-dir-hi { color: rgb(251, 146, 60); }
+    .steer { margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border); white-space: normal; }
+    .steer .st-ctl { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0; }
+    .steer select, .steer input { background: var(--btn-bg); color: var(--btn-ink); border: 1px solid var(--border); border-radius: 4px; padding: 2px 4px; font: inherit; }
+    .steer button { padding: 3px 10px; font-size: 11px; }
+    .steer .st-seq { margin: 6px 0 2px; color: var(--muted); }
+    .steer .st-row { white-space: pre-wrap; word-break: break-word; margin: 1px 0 3px; padding-left: 6px; border-left: 3px solid var(--border); }
+    .steer .st-row.o { border-left-color: rgb(251, 146, 60); }
+    .steer .st-row.b { border-left-color: rgb(96, 165, 250); }
+    .steer .st-div { color: #f87171; font-weight: 700; }
+    .steer .st-tag { color: var(--muted); font-size: 10px; }
+    .steer svg { display: block; width: 100%; height: auto; margin: 4px 0; }
+    .steer .st-tf span { border-radius: 2px; }
     #lensTip .lt-dir-lo, #lensPanelBody .lt-dir-lo { color: rgb(96, 165, 250); }
     .param input[type="color"] { width: 32px; height: 28px; padding: 2px; cursor: pointer; background: var(--btn-bg); border: 1px solid var(--border); border-radius: 4px; }
     .settings-popout {
@@ -498,7 +510,7 @@
   <script>
     (() => {
       const $ = id => document.getElementById(id);
-      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false, serverUrl: '', authorship: [], clipboardAuth: null, clipboardText: null, beforeInput: null, rolloutActive: false, rolloutAborted: false, modelName: null, jlensOn: false, valueOn: false, colorBy: 'stakes', valueIdx: new Map(), valueText: null, valueReq: null, valueReqText: null, exactText: null, exactReq: null, exactReqText: null, branchText: null, branchReq: null, branchReqText: null, valueMeta: null, statsMeta: null, dirMeta: null, dirLayer: null, dirName: null, dirLoaded: new Map(), dirFlips: new Set(), dirReq: null, dirReqKey: null, genTokens: [], lensCache: new Map(), lensSeq: 0, lensIdx: new Map(), lensReq: null, lensTokMap: null, lensTokReq: null };
+      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false, serverUrl: '', authorship: [], clipboardAuth: null, clipboardText: null, beforeInput: null, rolloutActive: false, rolloutAborted: false, modelName: null, jlensOn: false, valueOn: false, colorBy: 'stakes', valueIdx: new Map(), valueText: null, valueReq: null, valueReqText: null, exactText: null, exactReq: null, exactReqText: null, branchText: null, branchReq: null, branchReqText: null, valueMeta: null, statsMeta: null, dirMeta: null, dirLayer: null, dirName: null, dirLoaded: new Map(), dirFlips: new Set(), steerRes: null, dirReq: null, dirReqKey: null, genTokens: [], lensCache: new Map(), lensSeq: 0, lensIdx: new Map(), lensReq: null, lensTokMap: null, lensTokReq: null };
       const DEFAULT_COMPLETION_URL = 'http://localhost:8055/completion';
       const SERVER_URL_STORAGE_KEY = 'loomui:serverUrl';
       const newId = () => crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
@@ -821,6 +833,153 @@
       };
       const saveDir = () => {
         try { localStorage.setItem('loomDirLayer', String(state.dirLayer)); localStorage.setItem('loomDirName', state.dirName || ''); } catch (err) { /* storage unavailable */ }
+      };
+      // ---- steering (llama-server /steer): continuations from a clicked token with the picked direction pushed, against
+      // the same random numbers unpushed. The push is dose x mean |h| at the layer along u, from the token on ("step",
+      // the input kappa is measured with) or at that token only. Each run is logged as exposure by the server ----
+      const STEER_DEF = { dose: 0.25, mode: 'step', nSeq: 4, nGen: 48, tf: true };
+      const steerOpts = () => {
+        try { return Object.assign({}, STEER_DEF, JSON.parse(localStorage.getItem('loomSteer') || '{}')); } catch (err) { return Object.assign({}, STEER_DEF); }
+      };
+      const saveSteerOpts = o => { try { localStorage.setItem('loomSteer', JSON.stringify(o)); } catch (err) { /* storage unavailable */ } };
+      // which color a push toward +u (sign > 0) or -u lands on, with the direction's flip applied
+      const steerPole = (d, sign) => ((sign > 0) !== state.dirFlips.has(d.name)) ? 'orange' : 'blue';
+      const steerSection = i => {
+        const d = dirInfo(state.dirName);
+        if (!d || state.colorBy !== 'dir') return '';
+        const o = steerOpts(), w = dirView(d);
+        const sel = (k, vals, cur) => '<select data-steer="' + k + '">' + vals.map(v => '<option value="' + v[0] + '"' + (String(v[0]) === String(cur) ? ' selected' : '') + '>' + v[1] + '</option>').join('') + '</select>';
+        const sdu = d.cos_stats.sd; // natural sd of u.h/|h|: a dose of x |h| is about x / sd sd
+        let h = '<div class="steer"><div><b>Steer from this token</b> along ' + escapeHtml(dirTitle(d)) + ' (layer ' + d.layer + ')</div>';
+        h += '<div class="st-ctl">dose ' + sel('dose', [[0.1, '0.1 |h| (~' + (0.1 / sdu).toFixed(1) + ' sd)'], [0.25, '0.25 |h| (~' + (0.25 / sdu).toFixed(1) + ' sd), as measured'], [0.5, '0.5 |h| (~' + (0.5 / sdu).toFixed(1) + ' sd)'], [1, '1 |h| (~' + (1 / sdu).toFixed(1) + ' sd)']], o.dose) +
+          ' ' + sel('mode', [['step', 'from here on'], ['impulse', 'this token only']], o.mode) + '</div>';
+        h += '<div class="st-ctl">' + sel('nSeq', [[2, '2 seeds'], [4, '4 seeds'], [8, '8 seeds']], o.nSeq) + ' ' + sel('nGen', [[24, '24 tokens'], [48, '48 tokens'], [96, '96 tokens']], o.nGen) +
+          ' <label><input type="checkbox" data-steer="tf"' + (o.tf ? ' checked' : '') + '> effect on the text after it</label>' +
+          ' <button id="steerRun" type="button" data-i="' + i + '">run</button></div>';
+        h += '<div class="lt-note">Arms: unpushed, toward <span class="lt-dir-hi">orange</span>' + (w.high ? ' (' + escapeHtml(w.high) + ')' : '') + ', toward <span class="lt-dir-lo">blue</span>' +
+          (w.low ? ' (' + escapeHtml(w.low) + ')' : '') + '. Same random numbers in every arm. Logged as exposure.</div>';
+        const r = state.steerRes;
+        h += '<div id="steerOut">' + (r && r.key === steerKey(i) ? r.html : '') + '</div></div>';
+        return h;
+      };
+      const steerKey = i => [$('pad').value.length, $('pad').value.slice(-64), i, state.dirName, state.dirFlips.has(state.dirName)].join('\u0000');
+      // token pieces of a continuation, each tinted by its pre-push u.h / |h| (the variable as the model's own writing moves it)
+      const steerToks = (d, sq, cls) => {
+        const sgn = dirSign(d.name);
+        let h = '';
+        sq.pieces.forEach((pc, t) => {
+          const k = t + 1; // proj[k] is the state at token t (proj[0]: the push token)
+          let st = '';
+          if (k < sq.proj.length && sq.norm[k] > 0) {
+            const p0 = pctOf(d.cos_stats, sq.proj[k] / sq.norm[k]);
+            if (p0 !== null) {
+              const z = sgn * probit(p0 / 100);
+              st = ' style="background:' + (z >= 0 ? 'rgba(251, 146, 60, ' + Math.min(0.65, 0.22 * z).toFixed(3) : 'rgba(96, 165, 250, ' + Math.min(0.4, -0.16 * z).toFixed(3)) + ')"';
+            }
+          }
+          const div = cls !== '' && t === sq.first_div ? '<span class="st-div">|</span>' : '';
+          h += div + '<span' + st + '>' + escapeHtml(pc) + '</span>';
+        });
+        if (sq.endpoint) h += ' <span class="st-tag">[stopped: ' + escapeHtml(sq.endpoint) + ']</span>';
+        return h;
+      };
+      // response per unit push by lag: mean over seeds of (pushed - unpushed pre-push u.h) / push, for each arm
+      const steerChart = (d, res) => {
+        const W = 380, H = 130, ml = 34, mr = 6, mt = 8, mb = 18;
+        const G = res.arms[0].seqs.reduce((m, q) => Math.max(m, q.proj.length), 0);
+        const curves = res.arms.slice(1).map(a => {
+          const ys = [];
+          for (let k = 0; k < G; ++k) {
+            let s = 0, c = 0;
+            a.seqs.forEach((q, j) => { const q0 = res.arms[0].seqs[j]; if (k < q.proj.length && k < q0.proj.length) { s += (q.proj[k] - q0.proj[k]) / a.push; ++c; } });
+            ys.push(c ? s / c : null);
+          }
+          return { a, ys };
+        });
+        const ref = -d.heldout;
+        let lo = Math.min(ref, -0.05), hi = Math.max(ref, 0.05);
+        curves.forEach(c => c.ys.forEach(y => { if (y !== null) { lo = Math.min(lo, y); hi = Math.max(hi, y); } }));
+        const pad = 0.1 * (hi - lo); lo -= pad; hi += pad;
+        const X = k => ml + (W - ml - mr) * k / Math.max(1, G - 1), Y = y => mt + (H - mt - mb) * (hi - y) / (hi - lo);
+        let g = '<svg viewBox="0 0 ' + W + ' ' + H + '" font-size="9" fill="currentColor">';
+        if (G > 13) g += '<rect x="' + X(13) + '" y="' + mt + '" width="' + (X(Math.min(31, G - 1)) - X(13)) + '" height="' + (H - mt - mb) + '" fill="rgba(148,163,184,0.12)"/>';
+        g += '<line x1="' + ml + '" x2="' + (W - mr) + '" y1="' + Y(0) + '" y2="' + Y(0) + '" stroke="rgba(148,163,184,0.5)"/>';
+        g += '<line x1="' + ml + '" x2="' + (W - mr) + '" y1="' + Y(ref) + '" y2="' + Y(ref) + '" stroke="#e5e7eb" stroke-dasharray="3 3"/>';
+        g += '<text x="' + (W - mr) + '" y="' + (Y(ref) - 3) + '" text-anchor="end" opacity="0.8">\u2212\u03ba held out ' + sgn(ref, 2) + '</text>';
+        [lo + pad, 0, hi - pad].forEach(v => { g += '<text x="' + (ml - 3) + '" y="' + (Y(v) + 3) + '" text-anchor="end" opacity="0.7">' + v.toFixed(2) + '</text>'; });
+        for (let k = 0; k < G; k += 8) g += '<text x="' + X(k) + '" y="' + (H - 5) + '" text-anchor="middle" opacity="0.7">' + k + '</text>';
+        curves.forEach(c => {
+          const col = steerPole(d, c.a.dose) === 'orange' ? 'rgb(251, 146, 60)' : 'rgb(96, 165, 250)';
+          const pts = c.ys.map((y, k) => y === null ? null : X(k).toFixed(1) + ',' + Y(y).toFixed(1)).filter(Boolean).join(' ');
+          g += '<polyline points="' + pts + '" fill="none" stroke="' + col + '" stroke-width="1.5"/>';
+        });
+        g += '</svg>';
+        // each arm's mean over lags 13-31, the window kappa is measured in
+        const win = ys => { const v = ys.slice(13, 32).filter(y => y !== null); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+        const ms = curves.map(c => ({ pole: steerPole(d, c.a.dose), m: win(c.ys) })).filter(x => x.m !== null);
+        if (ms.length) {
+          g += '<div class="lt-note">lags 13\u201331: ' + ms.map(x => '<span class="' + (x.pole === 'orange' ? 'lt-dir-hi' : 'lt-dir-lo') + '">toward ' + x.pole + '</span> ' + sgn(x.m, 2)).join(', ') +
+            (ms.length > 1 ? ', both ' + sgn(ms.reduce((a, x) => a + x.m, 0) / ms.length, 2) : '') + ' (\u2212\u03ba held out ' + sgn(-d.heldout, 2) + ' is an average over many prompts; one text with a few seeds is noisy)</div>';
+        }
+        return g;
+      };
+      const steerRender = (d, res, i) => {
+        const w = dirView(d);
+        let h = '<div class="lt-note">push ' + res.arms.slice(1).map(a => sgn(a.push, 1)).join(' / ') + ' along u (dose ' + res.arms.slice(1).map(a => sgn(a.dose, 2)).join(' / ') + ' \u00d7 mean |h| ' +
+          res.h_norm.toFixed(0) + '), ' + (res.mode === 'step' ? 'from token ' + res.pos + ' on' : 'at token ' + res.pos + ' only') + '; ' + res.sec.toFixed(1) + ' s</div>';
+        h += '<div><b>Response per unit push</b> <span class="lt-note">(change in the pre-push state along u at each later token, mean over seeds; it moves only through the tokens written. Below 0: the writing pushes back; shaded: lags 13\u201331, where \u03ba is measured)</span></div>';
+        h += steerChart(d, res);
+        res.arms[0].seqs.forEach((q0, k) => {
+          h += '<div class="st-seq">seed ' + (k + 1) + '</div>';
+          h += '<div class="st-row">' + steerToks(d, q0, '') + '</div>';
+          res.arms.slice(1).forEach(a => {
+            const c = steerPole(d, a.dose) === 'orange' ? 'o' : 'b';
+            h += '<div class="st-row ' + c + '">' + steerToks(d, a.seqs[k], c) + '</div>';
+          });
+        });
+        h += '<div class="lt-note">Rows: unpushed (grey), toward orange, toward blue; <span class="st-div">|</span> marks where a pushed row first differs. Tokens are tinted by the variable itself (pre-push u\u00b7h/|h|, as in the pad).</div>';
+        res.arms.slice(1).forEach(a => {
+          if (!a.tf) return;
+          const pole = steerPole(d, a.dose);
+          h += '<div style="margin-top:6px"><b>Pushed toward ' + pole + ', on the existing text after the token</b></div>';
+          const fmt = l => l.slice(0, 6).map(x => '<code>' + escapeHtml(lensPiece(x[0])) + '</code> ' + sgn(x[1], 2)).join(' ');
+          h += '<div>next token: more ' + (fmt(a.tf.up) || '\u2013') + '; less ' + (fmt(a.tf.down) || '\u2013') + ' <span class="lt-note">(\u0394 log p)</span></div>';
+          const map = state.lensTokMap;
+          if (map && map.toks.length) {
+            const text = $('pad').value;
+            let t = '';
+            for (let k = 1; k < a.tf.kl.length && res.pos + k < map.toks.length; ++k) {
+              const tk = map.toks[res.pos + k], kl = a.tf.kl[k - 1];
+              t += '<span style="background:rgba(192, 132, 252, ' + Math.min(0.7, kl / 0.5).toFixed(3) + ')" title="KL ' + kl.toFixed(3) + ', \u0394 log p ' + sgn(a.tf.dlogp[k - 1], 2) + '">' + escapeHtml(text.slice(tk.start, tk.end)) + '</span>';
+            }
+            h += '<div class="st-tf">' + t + '</div><div class="lt-note">purple: how much the push changes the prediction of each token (KL, full at 0.5 nats; hover for numbers)</div>';
+          }
+        });
+        return h;
+      };
+      const runSteer = async i => {
+        const d = dirInfo(state.dirName), map = state.lensTokMap;
+        if (!d || !map || !map.toks.length) return;
+        const o = steerOpts(), out = $('steerOut'), btn = $('steerRun');
+        if (btn) btn.disabled = true;
+        if (out) out.innerHTML = '<div class="lt-note">running ' + (1 + 2) + ' arms \u00d7 ' + o.nSeq + ' seeds \u00d7 ' + o.nGen + ' tokens\u2026</div>';
+        const key = steerKey(i);
+        try {
+          const res = await fetch(new URL(state.serverUrl).origin + '/steer', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tokens: map.toks.map(t => t.id), pos: i, dir: d.name, doses: [o.dose, -o.dose], mode: o.mode, n_seq: o.nSeq,
+              n_gen: o.nGen, seed: 1 + Math.floor(Math.random() * 1e9), teacher_forced: o.tf, note: 'loom, token ' + i }),
+          }).then(r => r.json());
+          if (res.error) throw new Error(res.error.message || 'steer error');
+          state.steerRes = { key, html: steerRender(d, res, i) };
+          const o2 = $('steerOut');
+          if (o2 && steerKey(i) === key) o2.innerHTML = state.steerRes.html;
+        } catch (err) {
+          const o2 = $('steerOut');
+          if (o2) o2.innerHTML = '<div class="lt-err">' + escapeHtml(String(err.message || err)) + '</div>';
+        }
+        const b2 = $('steerRun');
+        if (b2) b2.disabled = false;
       };
       // exact stakes grow with the number of later tokens, so stakes_all is colored by the residual from a
       // fit of log stakes_all on log(later predictions) over this text; now_x by its z within the text
@@ -1174,7 +1333,7 @@
         fitPad(false); // the reserved column narrows the text; recompute height
         if (state.valueOn && !state.valueIdx.get(i)) await requestValueAll();
         if (panel.hidden) return; // closed while loading
-        if (!state.jlensOn) { $('lensPanelBody').innerHTML = valueHtml(i); return; }
+        if (!state.jlensOn) { $('lensPanelBody').innerHTML = steerSection(i) + valueHtml(i); return; }
         let entry = state.lensIdx.get(i);
         if (!entry) {
           const data = await requestLensAll();
@@ -1182,8 +1341,18 @@
           if (!entry) entry = data && data.error ? data : { error: 'no lens data for this token' };
         }
         if (panel.hidden) return; // closed while loading
-        $('lensPanelBody').innerHTML = valueHtml(i) + lensHtml(entry);
+        $('lensPanelBody').innerHTML = steerSection(i) + valueHtml(i) + lensHtml(entry);
       };
+      $('lensPanelBody').addEventListener('click', e => {
+        if (e.target && e.target.id === 'steerRun') runSteer(Number(e.target.dataset.i));
+      });
+      $('lensPanelBody').addEventListener('change', e => {
+        const k = e.target && e.target.dataset && e.target.dataset.steer;
+        if (!k) return;
+        const o = steerOpts();
+        o[k] = k === 'tf' ? e.target.checked : k === 'mode' ? e.target.value : Number(e.target.value);
+        saveSteerOpts(o);
+      });
       $('lensPanelClose').addEventListener('click', () => {
         $('lensPanel').hidden = true;
         document.body.classList.remove('lens-panel-open');

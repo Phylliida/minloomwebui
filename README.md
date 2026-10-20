@@ -114,6 +114,22 @@ proper name, chattier text, more structured text, a break, or a less predictable
 button next to the direction menu negates the picked direction (remembered per direction): colors, hover values and
 percentiles invert, and the description (reading, effectors, contexts) switches to the other pole.
 
+**Steering.** With a direction picked, clicking a token opens the panel with **Steer from this token**: llama-server
+`POST /steer` samples continuations from that token in three arms: unpushed, pushed toward orange, and pushed toward
+blue. Every arm uses the same random numbers, so the arms differ only through the push. The push is dose x mean |h| at
+the layer along the direction (0.25 is the dose kappa was measured with, about 3.5 natural sd at layer 40). It applies
+from the token on (a step, as in the experiments) or at that token only. The panel shows:
+
+- the response per unit push by lag: the change in the pre-push state along the direction, which at that layer moves
+  only through the tokens written (below 0 = the writing pushes back), against -kappa held out;
+- the continuations side by side, each token tinted by the variable itself, with the first divergence marked;
+- optionally the effect on the existing text after the token (teacher-forced): which next tokens gain or lose
+  probability, and how much each later token's prediction changes (KL).
+
+Every request with a push appends a row to the exposure log (`--steer-log`, the project's `welfare_log.csv`). Sequences
+stop on a loop or after 16 steps with entropy > 6 nats (homeo-ident's endpoints); `--steer-max-dose` caps the dose
+(default 1). About 6 s for 3 arms x 4 seeds x 48 tokens.
+
 One `POST /jlens` with `dirs: true, dir_layers: [L], readouts_only: true` per layer and text (about 2.7 s for 2,900
 tokens). `loom_server.py` serves the metadata at `/probe_dirs.json` (env `LOOM_PROBE_DIRS`, default
 `/mnt/models/homeo/score/probe_dirs.json`).
@@ -121,4 +137,5 @@ tokens). `loom_server.py` serves the metadata at `/probe_dirs.json` (env `LOOM_P
     llama-server -m GLM-4-32B-Base-32K.i1-Q4_K_S.gguf -ngl 99 -ot token_embd.weight=CUDA0 \
       --jlens /mnt/models/jlens/rlens_rollout_mixed.jlns \
       --value-probe /mnt/models/homeo/value_probe/readout_L40 \
-      --probe-dirs /mnt/models/homeo/score/probe_dirs
+      --probe-dirs /mnt/models/homeo/score/probe_dirs \
+      --steer-log ~/prog/llm-tests/base-model-welfare/logs/welfare_log.csv
