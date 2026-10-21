@@ -309,6 +309,18 @@ def probe_dirs():
     return send_from_directory(PROBE_DIRS.parent, PROBE_DIRS.name, mimetype="application/json")
 
 
+# all-layer probes (difficulty forecasts, past difficulty, decoded text statistics; homeo/lin_probes_export.py): names,
+# labels, test R2 and color scales; the weights are loaded by llama-server --lin-probes
+LIN_PROBES = Path(os.environ.get("LOOM_LIN_PROBES", "/mnt/models/homeo/rollprobe/lin_probes.json"))
+
+
+@app.route("/lin_probes.json")
+def lin_probes():
+    if not LIN_PROBES.is_file():
+        return jsonify({"error": f"{LIN_PROBES} not found (set LOOM_LIN_PROBES)"}), 404
+    return send_from_directory(LIN_PROBES.parent, LIN_PROBES.name, mimetype="application/json")
+
+
 @app.route("/history", methods=["GET", "POST"])
 def history():
     if request.method == "POST":

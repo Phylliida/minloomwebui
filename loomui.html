@@ -443,7 +443,7 @@
           <option value="now_x">next-token dependence (exact)</option>
           <option value="branch">branch impact (gradient, rough)</option>
         </optgroup>
-        <optgroup label="regulated directions (layer sweep)">
+        <optgroup id="linAnchor" label="regulated directions (layer sweep)">
           <option value="dir">direction probe (pick below)</option>
         </optgroup>
       </select></label>
@@ -681,6 +681,7 @@
         state.valueText = null;
         state.exactText = null;
         state.branchText = null;
+        state.linText = null;
         state.dirLoaded.clear();
       };
       // ---- value view: per-token metrics, one of them (state.colorBy) tints the tokens ----
@@ -725,6 +726,7 @@
       };
       // fineweb percentile of v, interpolated between the stored quantiles (clipped to 0.5..99.5)
       const fwStats = m => {
+        if (m.st) return m.st; // all-layer probes carry their own scale (percentiles on the rollout test set)
         const meta = m.ref === 'probe' ? state.valueMeta : m.ref === 'stats' ? state.statsMeta : null;
         return meta && meta.stats && meta.stats[m.key];
       };
@@ -741,7 +743,7 @@
         return 99.5;
       };
       const valueLoaded = (m, text) => (m.src === 'exact' ? state.exactText : m.src === 'branch' ? state.branchText :
-        m.src === 'dir' ? state.dirLoaded.get(state.dirLayer) : state.valueText) === text;
+        m.src === 'dir' ? state.dirLoaded.get(state.dirLayer) : m.src === 'lin' ? state.linText : state.valueText) === text;
       // z of metric m at entry e: fineweb percentile on the probit scale, or within this text for exact metrics
       const valueZOf = (m, e) => {
         if (m.src === 'dir') {
@@ -1157,6 +1159,40 @@
         }).catch(err => { if (state.dirReq === p) state.dirReq = null; state.valueErr = String(err); return false; });
         return p;
       };
+      // all-layer probes (llama-server --lin-probes): every probe at every token in one forward pass, then per forecast
+      // probe the forecast change df_i = f(i) - f(i-1) and the TD error -c_i - K df_i, where c_i is the surprisal of
+      // token i (token_stats surprisal at i - 1) and K the forecast's horizon (reward log p, value -K f)
+      const requestValueLin = (text, map) => {
+        if (state.linText === text) return Promise.resolve(true);
+        if (state.linReq && state.linReqText === text) return state.linReq;
+        state.linReqText = text;
+        const p = state.linReq = requestValueFast(text, map).then(() => valuePost({ content: text, lin: true, readouts_only: true })).then(data => {
+          if (state.linReq === p) state.linReq = null;
+          if (data && data.error) { state.valueErr = data.error.message || 'linear probe error'; renderHighlight(); return false; }
+          const ll = data && data.lin;
+          if (!ll || data.n_tokens !== map.toks.length || $('pad').value !== text) return false;
+          ll.values.forEach((vals, i) => {
+            const e = valueEntry(i);
+            ll.names.forEach((n, k) => { e['lin:' + n] = vals[k]; });
+          });
+          const n = data.n_tokens;
+          for (const pr of (state.linMeta ? state.linMeta.probes : [])) {
+            if (!pr.horizon) continue;
+            for (let i = 0; i < n; ++i) {
+              const e = valueEntry(i), prev = i > 0 ? state.valueIdx.get(i - 1) : null;
+              const df = prev ? e['lin:' + pr.key] - prev['lin:' + pr.key] : null;
+              e['lind:' + pr.key] = df;
+              const c = prev ? prev.surprisal : null;
+              e['lintd:' + pr.key] = (df === null || c === null || c === undefined || !Number.isFinite(c)) ? null : -c - pr.horizon * df;
+            }
+          }
+          state.linText = text;
+          state.valueErr = null;
+          renderHighlight();
+          return true;
+        }).catch(err => { if (state.linReq === p) state.linReq = null; state.valueErr = String(err); return false; });
+        return p;
+      };
       const requestValueAll = () => {
         const text = $('pad').value;
         const map = state.lensTokMap;
@@ -1165,6 +1201,7 @@
         if (valueMetric().src === 'exact') jobs.push(requestValueExact(text, map));
         if (valueMetric().src === 'branch') jobs.push(requestValueBranch(text, map));
         if (valueMetric().src === 'dir') jobs.push(requestValueDirs(text, map));
+        if (valueMetric().src === 'lin') jobs.push(requestValueLin(text, map));
         return Promise.all(jobs).then(r => r.every(Boolean));
       };
       const valueHtml = i => {
@@ -1191,6 +1228,8 @@
           html += '<div style="margin-bottom:4px"></div>';
         }
         for (const m of VALUE_METRICS) {
+          // all-layer probes in the hover: a forecast change / TD error shows its forecast's family, a probe its group
+          if (m.src === 'lin' && !(sel.src === 'lin' && (sel.derived ? m.family === sel.family : m.group === sel.group && !m.derived))) continue;
           if (!valueLoaded(m, text)) {
             if (m === sel) html += '<div class="lt-note">' + escapeHtml(m.src === 'dir' ? 'layer ' + state.dirLayer + ' directions' : m.label) + ': ' + (m.src === 'exact' || m.src === 'branch' ? 'computing by backprop (several seconds)...' : '...') + '</div>';
             continue;
@@ -1199,7 +1238,7 @@
           if (v === undefined || v === null) continue;
           let ref = '';
           const p = fwPct(m, v);
-          if (p !== null) ref = 'fineweb percentile ' + (p <= 0.5 ? '<1' : p >= 99.5 ? '>99' : '~' + Math.round(p));
+          if (p !== null) ref = (m.src === 'lin' ? 'rollout test-set percentile ' : 'fineweb percentile ') + (p <= 0.5 ? '<1' : p >= 99.5 ? '>99' : '~' + Math.round(p));
           else if (m.key === 'stakes_all' && e.z_all !== undefined) ref = (state.lensTokMap ? state.lensTokMap.toks.length - 2 - i : '?') + ' later tokens; z ' + (e.z_all >= 0 ? '+' : '') + e.z_all.toFixed(2) + ' vs. tokens with as many later tokens in this text';
           else if (m.key === 'now_x' && e.z_nowx !== undefined) ref = 'z ' + (e.z_nowx >= 0 ? '+' : '') + e.z_nowx.toFixed(2) + ' within this text';
           else if (m.key === 'branch' && e.z_branch !== undefined) ref = 'z ' + (e.z_branch >= 0 ? '+' : '') + e.z_branch.toFixed(2) + ' (log) within this text';
@@ -2222,6 +2261,61 @@
         state.dirName = $('dirPick').value || null;
         showDirInfo();
         if (state.valueOn && state.colorBy === 'dir') { renderHighlight(); const p = ensureLensTokens(); if (p) p.then(() => requestValueAll()); else requestValueAll(); }
+      })();
+      // all-layer probe metadata from the loom server (optional): one color option per probe, and per difficulty
+      // forecast its forecast change and TD error; colored by percentiles on the rollout test set
+      (async () => {
+        let m;
+        try {
+          const r = await fetch('/lin_probes.json');
+          if (!r.ok) throw new Error(String(r.status));
+          m = await r.json();
+        } catch (err) { return; }
+        state.linMeta = m;
+        const nats = x => x.toFixed(2) + ' nats', signed = x => (x >= 0 ? '+' : '') + x.toFixed(3) + ' nats';
+        const fmtOf = t => t === 'log context' ? (x => x.toFixed(2) + ' (~' + Math.round(Math.exp(x)) + ' tokens)')
+          : t === 'log rank' ? (x => x.toFixed(2) + ' (rank ~' + Math.max(0, Math.round(Math.exp(x) - 1)) + ')')
+          : t.startsWith('added') || t === 'excess surprisal' ? (x => (x >= 0 ? '+' : '') + x.toFixed(2) + ' nats') : nats;
+        const groups = new Map();
+        const add = (g, metric) => {
+          VALUE_METRICS.push(metric);
+          if (!groups.has(g)) groups.set(g, []);
+          groups.get(g).push(metric);
+        };
+        const short = g => ({ 'forecast (best fit)': 'best fit', 'forecast (smooth, lambda 100)': 'smooth, \u03bb=100' })[g];
+        for (const pr of m.probes) {
+          const r2 = ' (R\u00b2 ' + pr.test_r2.toFixed(2) + ')', sh = short(pr.group);
+          add(pr.group, { key: 'lin:' + pr.key, src: 'lin', ref: 'lin', group: pr.group, family: pr.key, st: { pct: pr.pct },
+            label: pr.label + ' (all-layer probe' + (sh ? ', ' + sh : '') + ')', menu: pr.label + r2, fmt: fmtOf(pr.target) });
+        }
+        for (const pr of m.probes) {
+          if (!pr.horizon) continue;
+          const g = 'forecast change & TD error (' + short(pr.group) + ')';
+          add(g, { key: 'lind:' + pr.key, src: 'lin', ref: 'lin', group: g, family: pr.key, derived: true, st: { pct: pr.df_pct },
+            label: 'forecast change f(t) \u2212 f(t\u22121), ' + pr.label + ' (' + short(pr.group) + ')', menu: 'forecast change, ' + pr.label, fmt: signed });
+          add(g, { key: 'lintd:' + pr.key, src: 'lin', ref: 'lin', group: g, family: pr.key, derived: true, st: { pct: pr.td_pct },
+            label: 'TD error log p(token) \u2212 ' + pr.horizon + '\u00d7change, ' + pr.label + ' (' + short(pr.group) + ')',
+            menu: 'TD error, ' + pr.label, fmt: x => (x >= 0 ? '+' : '') + x.toFixed(2) + ' nats' });
+        }
+        const anchor = $('linAnchor');
+        for (const [g, ms] of groups) {
+          const og = document.createElement('optgroup');
+          og.label = 'all-layer probe: ' + g;
+          for (const mm of ms) {
+            const o = document.createElement('option');
+            o.value = mm.key;
+            o.textContent = mm.menu;
+            og.appendChild(o);
+          }
+          anchor.parentNode.insertBefore(og, anchor);
+        }
+        let saved = null;
+        try { saved = localStorage.getItem('loomValueColor'); } catch (err) { /* storage unavailable */ }
+        if (saved && VALUE_METRICS.some(x => x.key === saved && x.src === 'lin')) {
+          $('valueColor').value = saved;
+          state.colorBy = saved;
+          if (state.valueOn) { renderHighlight(); const p = ensureLensTokens(); if (p) p.then(() => requestValueAll()); else requestValueAll(); }
+        }
       })();
       // browsers may restore the checkbox across a refresh without firing
       // 'change'; sync JS state with whatever the box actually shows
