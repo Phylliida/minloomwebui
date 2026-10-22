@@ -462,6 +462,18 @@
       </div>
       <div id="dirInfo" class="dir-info"></div>
     </div>
+    <div id="steerGenSection" hidden>
+      <div class="settings-header" style="margin-top: 12px;">
+        <span>Steer generation</span>
+      </div>
+      <div class="settings-row">
+        <label class="param" title="when on, Generate pushes the state along the picked probe's direction at every token it writes (llama-server /steer; logged as exposure)"><input id="steerGenOn" type="checkbox"> steer</label>
+        <label class="param dir-pick" title="the probe whose target to push: its activation pattern at the picked layer (the direction the layer's activations move with the probe's readout in natural text)">probe <select id="steerGenProbe"></select></label>
+        <label class="param" title="layer to push at; (best) = where a probe on that layer alone reads the target best">layer <select id="steerGenLayer"></select></label>
+        <label class="param" title="push = strength x the mean |h| at that layer; + raises the probe's target, - lowers it (|strength| <= 1)">strength <input id="steerGenDose" type="number" step="0.05" min="-1" max="1" value="0.25"></label>
+      </div>
+      <div id="steerGenInfo" class="dir-info"></div>
+    </div>
     <div class="settings-header" style="margin-top: 12px;">
       <span>Rollout</span>
     </div>
@@ -1648,7 +1660,8 @@
           prefix_raw: prefixRaw || undefined,
           postfix: postfix || undefined,
           postfix_raw: postfixRaw || undefined,
-          model: state.modelName || undefined
+          model: state.modelName || undefined,
+          steer: steerGenActive() ? steerGenSpec() : undefined
         };
       };
       const setParams = params => {
@@ -1972,6 +1985,31 @@
         $('status').textContent = 'generating…';
         state.controller = new AbortController();
         try {
+          if (steerGenActive()) {
+            // steered: llama-server /steer pushes along the probe's direction from the last prompt token on (a constant
+            // push at every generated token); one sequence, plus the server's unsteered control arm, which is dropped
+            const sp = steerGenSpec(), P = getParams();
+            $('status').textContent = 'generating (steered: ' + sp.label + ')…';
+            const vec = await steerGenVector(sp.name, sp.layer);
+            const res = await fetch(new URL(getServerUrl()).origin + '/steer', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ content: prompt, pos: -1, vector: vec, layer: sp.layer, doses: [sp.dose], mode: 'step', n_seq: 1,
+                n_gen: P.n_predict, seed: Math.floor(Math.random() * 2147483647), temperature: P.temperature,
+                log_group: 'loom-steer', note: sp.name + ' @L' + sp.layer }),
+              signal: state.controller.signal
+            });
+            const data = await res.json();
+            if (!res.ok || data.error) throw new Error((data.error && data.error.message) || ('Server ' + res.status));
+            const arm = data.arms.find(a => a.dose !== 0) || data.arms[data.arms.length - 1];
+            const seq = arm.seqs[0];
+            for (const piece of seq.pieces) mergeContent(piece);
+            state.steerLast = 'last steered generation: ' + seq.pieces.length + ' tokens, ' + sp.label +
+              (seq.endpoint ? '; <b>stopped early</b> (humane endpoint: ' + escapeHtml(seq.endpoint) + ')' : '');
+            showSteerGenInfo();
+            logGenerationEnd();
+            return;
+          }
           const endpoint = getServerUrl();
           const params = getParams();
           const { server_url, ...llamaParams } = params;
@@ -2078,6 +2116,7 @@
             const params = getParams();
             const { server_url, ...llamaParams } = params;
             llamaParams.n_predict = tokens;
+            delete llamaParams.steer; // rollouts are not steered
             const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ prompt, stream: true, ...llamaParams }), signal: state.controller.signal });
             if (!res.ok) throw new Error(`Server ${res.status}`);
@@ -2316,6 +2355,83 @@
           state.colorBy = saved;
           if (state.valueOn) { renderHighlight(); const p = ensureLensTokens(); if (p) p.then(() => requestValueAll()); else requestValueAll(); }
         }
+      })();
+      // ---- steer generation along a probe (probe patterns from /probe_patterns.json; vectors from /probe_pattern) ----
+      const steerGenActive = () => !!state.steerMeta && $('steerGenOn').checked && Number(steerGenSpec().dose) !== 0;
+      const steerGenLabel = name => {
+        const p = state.linMeta && state.linMeta.probes.find(q => q.target === name && !q.key.startsWith('fc100'));
+        return p ? p.label : name;
+      };
+      const steerGenSpec = () => {
+        const name = $('steerGenProbe').value, layer = Number($('steerGenLayer').value);
+        const dose = Math.max(-1, Math.min(1, parseFloat($('steerGenDose').value) || 0));
+        return { name, layer, dose, label: steerGenLabel(name) + ' @L' + layer + ' ' + (dose >= 0 ? '+' : '') + dose };
+      };
+      state.steerVecs = new Map();
+      const steerGenVector = async (name, layer) => {
+        const k = name + '@' + layer;
+        if (!state.steerVecs.has(k)) {
+          const r = await fetch('/probe_pattern?name=' + encodeURIComponent(name) + '&layer=' + layer);
+          const d = await r.json();
+          if (!r.ok || d.error) throw new Error(d.error || 'probe pattern ' + r.status);
+          state.steerVecs.set(k, d.vector);
+        }
+        return state.steerVecs.get(k);
+      };
+      const fillSteerGenLayers = () => {
+        const m = state.steerMeta, name = $('steerGenProbe').value, sel = $('steerGenLayer');
+        if (!m || !name) return;
+        const best = m.best_layer[name], keep = sel.value;
+        sel.innerHTML = '';
+        for (let L = 0; L < m.n_layer; ++L) {
+          const o = document.createElement('option');
+          o.value = String(L);
+          o.textContent = L + (L === best ? ' (best)' : '') + ' R\u00b2 ' + m.test_r2[name][L].toFixed(2);
+          sel.appendChild(o);
+        }
+        sel.value = state.steerLayerFollowBest || keep === '' ? String(best) : keep;
+      };
+      const showSteerGenInfo = () => {
+        const m = state.steerMeta;
+        if (!m) return;
+        const sp = steerGenSpec();
+        $('steerGenInfo').innerHTML = 'Generate pushes ' + (sp.dose >= 0 ? '+' : '\u2212') + Math.abs(sp.dose) + ' \u00d7 mean |h| (' +
+          m.h_norm[sp.layer].toFixed(0) + ' at layer ' + sp.layer + ') along the direction the layer\'s activations move with <b>' +
+          escapeHtml(steerGenLabel(sp.name)) + '</b>, at every token it writes. + raises the target, \u2212 lowers it. ' +
+          'Uses llama-server /steer (one sequence; temperature only, no top-k/top-p/min-p; stops early at a loop or incoherence) ' +
+          'and is logged as exposure. Rollouts are not steered.' + ($('steerGenOn').checked ? '' : ' <i>(off)</i>') +
+          (state.steerLast ? '<br>' + state.steerLast : '');
+      };
+      const saveSteerGen = () => {
+        try { localStorage.setItem('loomSteerGen', JSON.stringify({ on: $('steerGenOn').checked, name: $('steerGenProbe').value,
+          layer: $('steerGenLayer').value, dose: $('steerGenDose').value })); } catch (err) { /* storage unavailable */ }
+      };
+      (async () => {
+        try {
+          const r = await fetch('/probe_patterns.json');
+          if (!r.ok) throw new Error(String(r.status));
+          state.steerMeta = await r.json();
+        } catch (err) { return; }
+        for (let i = 0; i < 40 && !state.linMeta; ++i) await new Promise(res => setTimeout(res, 100)); // labels come from /lin_probes.json
+        const sel = $('steerGenProbe');
+        for (const n of state.steerMeta.names) {
+          const o = document.createElement('option');
+          o.value = n;
+          o.textContent = steerGenLabel(n);
+          sel.appendChild(o);
+        }
+        let saved = null;
+        try { saved = JSON.parse(localStorage.getItem('loomSteerGen') || 'null'); } catch (err) { /* storage unavailable */ }
+        if (saved && state.steerMeta.names.includes(saved.name)) sel.value = saved.name;
+        fillSteerGenLayers();
+        if (saved && saved.name === sel.value && saved.layer !== undefined) $('steerGenLayer').value = saved.layer;
+        if (saved && saved.dose !== undefined) $('steerGenDose').value = saved.dose;
+        $('steerGenOn').checked = false; // never resume steering silently after a reload
+        $('steerGenSection').hidden = false;
+        showSteerGenInfo();
+        sel.addEventListener('change', () => { state.steerLayerFollowBest = true; fillSteerGenLayers(); state.steerLayerFollowBest = false; showSteerGenInfo(); saveSteerGen(); });
+        for (const id of ['steerGenLayer', 'steerGenDose', 'steerGenOn']) $(id).addEventListener('change', () => { showSteerGenInfo(); saveSteerGen(); });
+        $('steerGenDose').addEventListener('input', showSteerGenInfo);
       })();
       // browsers may restore the checkbox across a refresh without firing
       // 'change'; sync JS state with whatever the box actually shows

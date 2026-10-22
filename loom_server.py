@@ -321,6 +321,37 @@ def lin_probes():
     return send_from_directory(LIN_PROBES.parent, LIN_PROBES.name, mimetype="application/json")
 
 
+# steering directions for the probes (homeo/probe_patterns.py): each single-layer probe's activation pattern at every
+# layer, unit vectors f32 [n_targets][n_layer][n_embd] + metadata. The loom sends the picked vector to llama-server /steer
+PROBE_PATTERNS = Path(os.environ.get("LOOM_PROBE_PATTERNS", "/mnt/models/homeo/rollprobe/probe_patterns"))
+
+
+@app.route("/probe_patterns.json")
+def probe_patterns_meta():
+    meta = PROBE_PATTERNS.with_suffix(".json")
+    if not meta.is_file():
+        return jsonify({"error": f"{meta} not found (set LOOM_PROBE_PATTERNS)"}), 404
+    return send_from_directory(meta.parent, meta.name, mimetype="application/json")
+
+
+@app.route("/probe_pattern")
+def probe_pattern():
+    from array import array
+    meta_path = PROBE_PATTERNS.with_suffix(".json")
+    if not meta_path.is_file():
+        return jsonify({"error": f"{meta_path} not found (set LOOM_PROBE_PATTERNS)"}), 404
+    meta = json.loads(meta_path.read_text())
+    name, layer = request.args.get("name", ""), int(request.args.get("layer", "-1"))
+    if name not in meta["names"] or not 0 <= layer < meta["n_layer"]:
+        return jsonify({"error": f"unknown probe or layer: {name!r} {layer}"}), 400
+    d = meta["n_embd"]
+    vec = array("f")
+    with open(PROBE_PATTERNS.with_suffix(".f32"), "rb") as f:
+        f.seek(((meta["names"].index(name) * meta["n_layer"]) + layer) * d * 4)
+        vec.fromfile(f, d)
+    return jsonify({"name": name, "layer": layer, "h_norm": meta["h_norm"][layer], "vector": vec.tolist()})
+
+
 @app.route("/history", methods=["GET", "POST"])
 def history():
     if request.method == "POST":
