@@ -447,6 +447,7 @@
           <option value="dir">direction probe (pick below)</option>
         </optgroup>
       </select></label>
+      <button id="valueFlip" type="button" class="dir-flip" aria-pressed="false" title="flip the selected metric's sign: swaps orange and blue (remembered per metric; for a direction probe it flips the direction, as the button under Direction probes does)">flip sign</button>
       <label class="param">show author on hover <input id="hoverLabel" type="checkbox"></label>
     </div>
     <div id="dirSection" hidden>
@@ -529,7 +530,7 @@
   <script>
     (() => {
       const $ = id => document.getElementById(id);
-      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false, serverUrl: '', authorship: [], clipboardAuth: null, clipboardText: null, beforeInput: null, rolloutActive: false, rolloutAborted: false, modelName: null, jlensOn: false, valueOn: false, colorBy: 'stakes', valueIdx: new Map(), valueText: null, valueReq: null, valueReqText: null, exactText: null, exactReq: null, exactReqText: null, branchText: null, branchReq: null, branchReqText: null, valueMeta: null, statsMeta: null, dirMeta: null, dirLayer: null, dirName: null, dirLoaded: new Map(), dirFlips: new Set(), steerRes: null, dirReq: null, dirReqKey: null, genTokens: [], lensCache: new Map(), lensSeq: 0, lensIdx: new Map(), lensReq: null, lensTokMap: null, lensTokReq: null };
+      const state = { controller: null, base: '', gen: '', entry: null, cache: new Map(), total: 0, ignoreLog: false, lastPreGenIdx: null, runId: null, runLoggedEnd: false, postfixApplied: false, serverUrl: '', authorship: [], clipboardAuth: null, clipboardText: null, beforeInput: null, rolloutActive: false, rolloutAborted: false, modelName: null, jlensOn: false, valueOn: false, colorBy: 'stakes', valueIdx: new Map(), valueText: null, valueReq: null, valueReqText: null, exactText: null, exactReq: null, exactReqText: null, branchText: null, branchReq: null, branchReqText: null, valueMeta: null, statsMeta: null, dirMeta: null, dirLayer: null, dirName: null, dirLoaded: new Map(), dirFlips: new Set(), metricFlips: new Set(), steerRes: null, dirReq: null, dirReqKey: null, genTokens: [], lensCache: new Map(), lensSeq: 0, lensIdx: new Map(), lensReq: null, lensTokMap: null, lensTokReq: null };
       const DEFAULT_COMPLETION_URL = 'http://localhost:8055/completion';
       const SERVER_URL_STORAGE_KEY = 'loomui:serverUrl';
       const newId = () => crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(16).slice(2) + Date.now().toString(16);
@@ -757,7 +758,14 @@
       const valueLoaded = (m, text) => (m.src === 'exact' ? state.exactText : m.src === 'branch' ? state.branchText :
         m.src === 'dir' ? state.dirLoaded.get(state.dirLayer) : m.src === 'lin' ? state.linText : state.valueText) === text;
       // z of metric m at entry e: fineweb percentile on the probit scale, or within this text for exact metrics
+      // flipped metrics (the flip button by the color menu, remembered per metric) swap orange and blue; direction
+      // probes flip inside valueZOfRaw (their sign is arbitrary, so their values flip too)
+      const metricFlipped = m => m.src !== 'dir' && state.metricFlips.has(m.key);
       const valueZOf = (m, e) => {
+        const z = valueZOfRaw(m, e);
+        return z === null || !metricFlipped(m) ? z : -z;
+      };
+      const valueZOfRaw = (m, e) => {
         if (m.src === 'dir') {
           const d = dirInfo(state.dirName), v = e && e['dir:' + state.dirName];
           if (!d || v === undefined || v === null) return null;
@@ -803,6 +811,13 @@
         : { reading: d.reading, high: d.high, low: d.low, more: d.more, less: d.less, ctx_high: d.ctx_high, ctx_low: d.ctx_low, doc_neg: d.flipped };
       const syncDirFlip = () => {
         const on = !!state.dirName && state.dirFlips.has(state.dirName), b = $('dirFlip');
+        b.setAttribute('aria-pressed', String(on));
+        b.textContent = on ? 'flipped' : 'flip sign';
+        syncValueFlip();
+      };
+      const syncValueFlip = () => {
+        const m = valueMetric(), b = $('valueFlip');
+        const on = m.src === 'dir' ? !!state.dirName && state.dirFlips.has(state.dirName) : state.metricFlips.has(m.key);
         b.setAttribute('aria-pressed', String(on));
         b.textContent = on ? 'flipped' : 'flip sign';
       };
@@ -1255,7 +1270,7 @@
           else if (m.key === 'now_x' && e.z_nowx !== undefined) ref = 'z ' + (e.z_nowx >= 0 ? '+' : '') + e.z_nowx.toFixed(2) + ' within this text';
           else if (m.key === 'branch' && e.z_branch !== undefined) ref = 'z ' + (e.z_branch >= 0 ? '+' : '') + e.z_branch.toFixed(2) + ' (log) within this text';
           else if (m.key === 'surp_all' && e.z_surpall !== undefined) ref = (state.lensTokMap ? state.lensTokMap.toks.length - 2 - i : '?') + ' later tokens; z ' + (e.z_surpall >= 0 ? '+' : '') + e.z_surpall.toFixed(2) + ' within this text';
-          const label = m === sel ? '<b>&#9656; ' + escapeHtml(m.label) + '</b>' : escapeHtml(m.label);
+          const label = m === sel ? '<b>&#9656; ' + escapeHtml(m.label) + '</b>' + (metricFlipped(m) ? ' <span class="lt-note">(colors flipped: orange = low)</span>' : '') : escapeHtml(m.label);
           html += '<div>' + label + ': <b>' + m.fmt(v) + '</b>' + (ref ? ' <span class="lt-note">(' + ref + ')</span>' : '') + '</div>';
         }
         if (e.branch_cand && e.branch_cand.length && state.branchText === text) {
@@ -2231,8 +2246,18 @@
         syncHoverMode();
         if (state.valueOn) { const p = ensureLensTokens(); if (p) p.then(() => requestValueAll()); else requestValueAll(); }
       });
+      $('valueFlip').addEventListener('click', () => {
+        const m = valueMetric();
+        if (m.src === 'dir') { if (state.dirName) $('dirFlip').click(); return; }
+        if (state.metricFlips.has(m.key)) state.metricFlips.delete(m.key); else state.metricFlips.add(m.key);
+        try { localStorage.setItem('loomMetricFlips', JSON.stringify([...state.metricFlips])); } catch (err) { /* storage unavailable */ }
+        syncValueFlip();
+        renderHighlight();
+      });
+      try { (JSON.parse(localStorage.getItem('loomMetricFlips') || '[]') || []).forEach(k => state.metricFlips.add(k)); } catch (err) { /* storage unavailable */ }
       $('valueColor').addEventListener('change', e => {
         state.colorBy = e.target.value;
+        syncValueFlip();
         try { localStorage.setItem('loomValueColor', state.colorBy); } catch (err) { /* storage unavailable */ }
         state.valueErr = null;
         renderHighlight();
@@ -2242,6 +2267,7 @@
       const selectDirColor = () => {
         state.colorBy = 'dir';
         $('valueColor').value = 'dir';
+        syncValueFlip();
         try { localStorage.setItem('loomValueColor', 'dir'); } catch (err) { /* storage unavailable */ }
         state.valueErr = null;
         if (!$('valueToggle').checked) { $('valueToggle').checked = true; $('valueToggle').dispatchEvent(new Event('change')); return; }
@@ -2353,6 +2379,7 @@
         if (saved && VALUE_METRICS.some(x => x.key === saved && x.src === 'lin')) {
           $('valueColor').value = saved;
           state.colorBy = saved;
+          syncValueFlip();
           if (state.valueOn) { renderHighlight(); const p = ensureLensTokens(); if (p) p.then(() => requestValueAll()); else requestValueAll(); }
         }
       })();
@@ -2444,6 +2471,7 @@
           if (saved && VALUE_METRICS.some(m => m.key === saved)) $('valueColor').value = saved;
         } catch (err) { /* storage unavailable */ }
         state.colorBy = $('valueColor').value;
+        syncValueFlip();
         if ($('valueToggle').checked) $('valueToggle').dispatchEvent(new Event('change'));
       }
       // the lens overlay sits above the pad for hover events; forward clicks
