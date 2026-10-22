@@ -1938,6 +1938,35 @@
           console.error('bad chunk', chunk, err);
         }
       };
+      // /steer with "stream": true: {"content", "stop": false} per token, then {"stop": true, "endpoint", "n_gen", ...},
+      // then [DONE]; errors arrive as {"error": {...}}. Returns the final event.
+      const pumpSteerStream = async res => {
+        const reader = res.body?.getReader();
+        if (!reader) throw new Error('No stream from server');
+        const decoder = new TextDecoder();
+        let buffer = '', fin = null;
+        const handle = line => {
+          const d = line.replace(/^data:\s*/, '').trim();
+          if (!d || d === '[DONE]') return;
+          const msg = JSON.parse(d);
+          if (msg.error) throw new Error(msg.error.message || 'steer error');
+          if (msg.content) mergeContent(msg.content);
+          if (msg.stop) fin = msg;
+        };
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let split;
+          while ((split = buffer.indexOf('\n\n')) >= 0) {
+            const packet = buffer.slice(0, split);
+            buffer = buffer.slice(split + 2);
+            packet.split(/\n/).forEach(handle);
+          }
+        }
+        if (buffer.trim()) buffer.split(/\n/).forEach(handle);
+        return fin;
+      };
       const pumpStream = async res => {
         const reader = res.body?.getReader();
         if (!reader) throw new Error('No stream from server');
@@ -2002,7 +2031,7 @@
         try {
           if (steerGenActive()) {
             // steered: llama-server /steer pushes along the probe's direction from the last prompt token on (a constant
-            // push at every generated token); one sequence, plus the server's unsteered control arm, which is dropped
+            // push at every generated token); one sequence, streamed (no unsteered control arm); Stop cancels it
             const sp = steerGenSpec(), P = getParams();
             $('status').textContent = 'generating (steered: ' + sp.label + ')…';
             const vec = await steerGenVector(sp.name, sp.layer);
@@ -2010,17 +2039,18 @@
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ content: prompt, pos: -1, vector: vec, layer: sp.layer, doses: [sp.dose], mode: 'step', n_seq: 1,
-                n_gen: P.n_predict, seed: Math.floor(Math.random() * 2147483647), temperature: P.temperature,
+                n_gen: P.n_predict, seed: Math.floor(Math.random() * 2147483647), temperature: P.temperature, stream: true,
                 log_group: 'loom-steer', note: sp.name + ' @L' + sp.layer }),
               signal: state.controller.signal
             });
-            const data = await res.json();
-            if (!res.ok || data.error) throw new Error((data.error && data.error.message) || ('Server ' + res.status));
-            const arm = data.arms.find(a => a.dose !== 0) || data.arms[data.arms.length - 1];
-            const seq = arm.seqs[0];
-            for (const piece of seq.pieces) mergeContent(piece);
-            state.steerLast = 'last steered generation: ' + seq.pieces.length + ' tokens, ' + sp.label +
-              (seq.endpoint ? '; <b>stopped early</b> (humane endpoint: ' + escapeHtml(seq.endpoint) + ')' : '');
+            if (!res.ok) {
+              let msg = null;
+              try { msg = (await res.json()).error.message; } catch (err) { /* not json */ }
+              throw new Error(msg || ('Server ' + res.status));
+            }
+            const fin = await pumpSteerStream(res);
+            state.steerLast = 'last steered generation: ' + (fin ? fin.n_gen : '?') + ' tokens, ' + sp.label +
+              (fin && fin.endpoint ? '; <b>stopped early</b> (humane endpoint: ' + escapeHtml(fin.endpoint) + ')' : '');
             showSteerGenInfo();
             logGenerationEnd();
             return;
